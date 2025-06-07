@@ -4,7 +4,7 @@ setlocal EnableDelayedExpansion
 :: =============================================================
 :: INITIATOR - Script d'installation et de mise à jour
 :: Licence GNU
-:: Batch Script - par Eurobotics Association - V.20250607
+:: Batch Script - par Eurobotics Association - V.20250607-Win7Fix
 :: =============================================================
 
 set "TMPDIR=%TEMP%\installers"
@@ -30,9 +30,9 @@ if %errorlevel% neq 0 (
 :: %1 = URL, %2 = OutputFile
 set "PS1_FILE=%TMPDIR%\download.ps1"
 echo try { > "%PS1_FILE%"
-echo   $r = Invoke-WebRequest -Uri '%~1' -OutFile '%~2' >> "%PS1_FILE%"
-echo   if ($r.StatusCode -ne 200) { Write-Error "Code: $($r.StatusCode)"; exit 1 } >> "%PS1_FILE%"
-echo } catch { Write-Error "Erreur de téléchargement"; exit 1 } >> "%PS1_FILE%"
+echo   Invoke-WebRequest -Uri '%~1' -OutFile '%~2' -UseBasicParsing >> "%PS1_FILE%"
+echo   if (!(Test-Path '%~2')) { Write-Error "Fichier non téléchargé."; exit 1 } >> "%PS1_FILE%"
+echo } catch { Write-Error "Erreur de téléchargement : $_"; exit 1 } >> "%PS1_FILE%"
 powershell -ExecutionPolicy Bypass -File "%PS1_FILE%"
 del "%PS1_FILE%" >nul 2>&1
 if not exist "%~2" (
@@ -40,14 +40,13 @@ if not exist "%~2" (
     echo ❌ Téléchargement échoué : %~2
     exit /b 1
 )
-exit /b 0
+goto :eof
 
-:: Function to handle failures
 :fail
 set "FAIL_FLAG=1"
 echo ❌ %~1 >> "%LOGFILE%"
 echo ❌ %~1
-exit /b 1
+goto :eof
 
 :: ---- 1. Python ----
 echo [1/5] Vérification ou installation de Python...
