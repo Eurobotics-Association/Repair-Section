@@ -13,7 +13,26 @@ setlocal EnableDelayedExpansion
 :: 4. Télécharge et installe 7-Zip depuis 7-zip.org
 :: Chaque outil est vérifié, téléchargé automatiquement si absent,
 :: et installé en version la plus récente.
+:: En fin de script, un récapitulatif affiche en vert les succès ✅,
+:: et en rouge les échecs ❌.
 :: =============================================================
+
+:: Fonction pour affichage coloré
+set "ESC=\033"
+for /f "delims=" %%A in ('echo prompt $E ^| cmd') do set "ESC=%%A"
+
+set "OK=%ESC%[32m✅ SUCCÈS:%ESC%[0m"
+set "FAIL=%ESC%[31m❌ ÉCHEC:%ESC%[0m"
+set "OKRAW=%ESC%[32m"
+set "FAILRAW=%ESC%[31m"
+set "RESET=%ESC%[0m"
+
+:: Variables de statut
+set "STAT_PY=❌"
+set "STAT_PIP=❌"
+set "STAT_WORM=❌"
+set "STAT_7Z=❌"
+set "STAT_CLAM=❌"
 
 :: Vérification de droits administrateur
 net session >nul 2>&1
@@ -27,73 +46,73 @@ if %errorlevel% neq 0 (
 set "TMPDIR=%TEMP%\installers"
 if not exist "%TMPDIR%" mkdir "%TMPDIR%"
 
-:: ---- 1. Télécharger et installer / mettre à jour Python ----
-echo [1/4] Vérification ou installation de Python...
+:: ---- 1. Python ----
+echo [1/5] Vérification ou installation de Python...
 where python >nul 2>&1
 if %errorlevel% neq 0 (
-    echo Python non détecté. Téléchargement...
     powershell -Command "(Invoke-WebRequest -UseBasicParsing https://www.python.org/downloads/windows/).Content | Select-String -Pattern 'python-(\d+\.\d+\.\d+)-amd64\.exe' -AllMatches | ForEach-Object { $_.Matches } | Select-Object -First 1 | ForEach-Object { $_.Value }" > "%TMPDIR%\python_filename.txt"
     set /p PYTHON_EXE=<"%TMPDIR%\python_filename.txt"
     powershell -Command "Invoke-WebRequest https://www.python.org/ftp/python/%PYTHON_EXE:python-=% -OutFile '%TMPDIR%\python.exe'"
-    "%TMPDIR%\python.exe" /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1
+    "%TMPDIR%\python.exe" /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1 && set "STAT_PY=✅" || set "STAT_PY=❌"
 ) else (
-    echo Python déjà installé. Mise à jour de pip...
-    python -m pip install --upgrade pip
+    set "STAT_PY=✅"
+    python -m pip install --upgrade pip && set "STAT_PIP=✅" || set "STAT_PIP=❌"
 )
 
-:: ---- 2. Installer / mettre à jour Wormhole ----
-echo [2/4] Installation ou mise à jour de Wormhole (magic-wormhole)...
+:: ---- 2. Wormhole ----
+echo [2/5] Installation ou mise à jour de Wormhole...
 python -m pip show magic-wormhole >nul 2>&1
 if %errorlevel% neq 0 (
-    echo Wormhole non détecté. Installation...
-    python -m pip install magic-wormhole
+    python -m pip install magic-wormhole && set "STAT_WORM=✅" || set "STAT_WORM=❌"
 ) else (
-    echo Wormhole détecté. Mise à jour...
-    python -m pip install --upgrade magic-wormhole
+    python -m pip install --upgrade magic-wormhole && set "STAT_WORM=✅" || set "STAT_WORM=❌"
 )
 
-:: ---- 3. Télécharger et installer / mettre à jour ClamWin ----
-echo [3/4] Téléchargement de la dernière version de ClamWin...
+:: ---- 3. ClamWin ----
+echo [3/5] Installation de ClamWin Antivirus...
 powershell -Command "(Invoke-WebRequest -UseBasicParsing https://sourceforge.net/projects/clamwin/rss?path=/) | Select-String -Pattern 'clamwin-([\d.]+)-setup.exe' -AllMatches | ForEach-Object { $_.Matches } | Select-Object -First 1 | ForEach-Object { $_.Value }" > "%TMPDIR%\clamwin_filename.txt"
 set /p CLAMWIN_EXE=<"%TMPDIR%\clamwin_filename.txt"
 powershell -Command "Invoke-WebRequest https://downloads.sourceforge.net/clamwin/%CLAMWIN_EXE% -OutFile '%TMPDIR%\clamwin.exe'"
-echo Installation silencieuse de ClamWin...
-"%TMPDIR%\clamwin.exe" /sp- /verysilent /norestart
+"%TMPDIR%\clamwin.exe" /sp- /verysilent /norestart && set "STAT_CLAM=✅" || set "STAT_CLAM=❌"
 
-:: ---- 4. Télécharger et installer / mettre à jour 7-Zip ----
-echo [4/4] Vérification ou installation de 7-Zip...
+:: ---- 4. 7-Zip ----
+echo [4/5] Vérification ou installation de 7-Zip...
 where 7z >nul 2>&1
 if %errorlevel% neq 0 (
-    echo 7-Zip non détecté. Téléchargement de la dernière version...
     powershell -Command "(Invoke-WebRequest -UseBasicParsing https://www.7-zip.org/).Content | Select-String -Pattern '7z(\d+)-x64\.exe' -AllMatches | ForEach-Object { $_.Matches } | Select-Object -First 1 | ForEach-Object { $_.Value }" > "%TMPDIR%\7zip_filename.txt"
     set /p SEVENZIP_EXE=<"%TMPDIR%\7zip_filename.txt"
     powershell -Command "Invoke-WebRequest https://www.7-zip.org/a/%SEVENZIP_EXE% -OutFile '%TMPDIR%\7zip.exe'"
-    "%TMPDIR%\7zip.exe" /S
+    "%TMPDIR%\7zip.exe" /S && set "STAT_7Z=✅" || set "STAT_7Z=❌"
 ) else (
-    echo 7-Zip déjà installé.
+    set "STAT_7Z=✅"
 )
 
-:: ---- Ajout de 7-Zip au PATH si nécessaire ----
+:: ---- Ajout manuel au PATH (vérifié avant) ----
 set "SEVENZIP_PATH=C:\Program Files\7-Zip"
 if exist "%SEVENZIP_PATH%\7z.exe" (
     echo Ajout de 7-Zip au PATH système si nécessaire...
     echo %PATH% | find /I "%SEVENZIP_PATH%" >nul
     if errorlevel 1 (
         setx PATH "%PATH%;%SEVENZIP_PATH%" /M
-        echo 7-Zip ajouté au PATH.
-    ) else (
-        echo 7-Zip déjà présent dans le PATH.
     )
 )
 
-:: Résumé
-where python >nul 2>&1 && echo Python OK || echo Python manquant
-where pip >nul 2>&1 && echo pip OK || echo pip manquant
-where wormhole >nul 2>&1 && echo Wormhole OK || echo Wormhole manquant
-where 7z >nul 2>&1 && echo 7-Zip OK || echo 7-Zip manquant
-
-:: ClamWin n’ajoute pas de commande dans le PATH par défaut
-
+:: ---- Récapitulatif ----
 echo.
-echo ✅ Mise à jour ou installation terminée. Python, Wormhole, ClamWin et 7-Zip sont prêts à l'emploi.
+echo ================= RÉCAPITULATIF =================
+echo.
+echo %STAT_PY% Python
+if "%STAT_PIP%"=="✅" (echo %STAT_PIP% pip) else (echo %FAILRAW%❌ pip%RESET%)
+echo %STAT_WORM% Wormhole
+if "%STAT_CLAM%"=="✅" (echo %OKRAW%✅ ClamWin%RESET%) else (echo %FAILRAW%❌ ClamWin%RESET%)
+echo %STAT_7Z% 7-Zip
+
+if "%STAT_PY%%STAT_WORM%%STAT_CLAM%%STAT_7Z%"=="✅✅✅✅" (
+    echo.
+    echo %OKRAW%🎉 Tous les outils sont installés et à jour.%RESET%
+) else (
+    echo.
+    echo %FAILRAW%⚠️ Certaines installations ont échoué. Voir les messages ci-dessus.%RESET%
+)
+echo.
 pause
