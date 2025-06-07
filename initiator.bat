@@ -25,10 +25,16 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-:: Function to download a file and check success
+:: Function to download a file using a temporary PowerShell script
 :DownloadAndCheck
 :: %1 = URL, %2 = OutputFile
-powershell -Command "try { $r = Invoke-WebRequest -Uri '%~1' -OutFile '%~2'; if ($r.StatusCode -ne 200) { Write-Error 'Téléchargement échoué avec code: ' + $r.StatusCode; exit 1 } } catch { Write-Error 'Erreur de téléchargement'; exit 1 }"
+set "PS1_FILE=%TMPDIR%\download.ps1"
+echo try { > "%PS1_FILE%"
+echo   $r = Invoke-WebRequest -Uri '%~1' -OutFile '%~2' >> "%PS1_FILE%"
+echo   if ($r.StatusCode -ne 200) { Write-Error "Code: $($r.StatusCode)"; exit 1 } >> "%PS1_FILE%"
+echo } catch { Write-Error "Erreur de téléchargement"; exit 1 } >> "%PS1_FILE%"
+powershell -ExecutionPolicy Bypass -File "%PS1_FILE%"
+del "%PS1_FILE%" >nul 2>&1
 if not exist "%~2" (
     echo ❌ Erreur : fichier non téléchargé : %~2 >> "%LOGFILE%"
     echo ❌ Téléchargement échoué : %~2
