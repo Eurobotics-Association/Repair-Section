@@ -38,18 +38,18 @@ if %errorlevel% neq 0 (
     "%TMPDIR%\python.exe" /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1
 ) else (
     echo Python déjà installé. Mise à jour de pip...
-    pip install --upgrade pip
+    python -m pip install --upgrade pip
 )
 
 :: ---- 2. Installer / mettre à jour Wormhole ----
 echo [2/4] Installation ou mise à jour de Wormhole (magic-wormhole)...
-pip show magic-wormhole >nul 2>&1
+python -m pip show magic-wormhole >nul 2>&1
 if %errorlevel% neq 0 (
     echo Wormhole non détecté. Installation...
-    pip install magic-wormhole
+    python -m pip install magic-wormhole
 ) else (
     echo Wormhole détecté. Mise à jour...
-    pip install --upgrade magic-wormhole
+    python -m pip install --upgrade magic-wormhole
 )
 
 :: ---- 3. Télécharger et installer / mettre à jour ClamWin ----
@@ -71,6 +71,19 @@ if %errorlevel% neq 0 (
     "%TMPDIR%\7zip.exe" /S
 ) else (
     echo 7-Zip déjà installé.
+)
+
+:: ---- Ajout de 7-Zip au PATH si nécessaire ----
+set "SEVENZIP_PATH=C:\Program Files\7-Zip"
+if exist "%SEVENZIP_PATH%\7z.exe" (
+    echo Ajout de 7-Zip au PATH système si nécessaire...
+    echo %PATH% | find /I "%SEVENZIP_PATH%" >nul
+    if errorlevel 1 (
+        setx PATH "%PATH%;%SEVENZIP_PATH%" /M
+        echo 7-Zip ajouté au PATH.
+    ) else (
+        echo 7-Zip déjà présent dans le PATH.
+    )
 )
 
 :: Résumé
