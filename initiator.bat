@@ -1,4 +1,4 @@
-@echo on
+@echo off
 
 :: =============================================
 :: INITIATOR.BAT - Outil d'installation automatisée
@@ -40,21 +40,21 @@ echo === Lancement de l'installation... === > "%LOG_FILE%"
 :: === Vérifier l'espace disque disponible ===
 for /f %%f in ('powershell -NoProfile -Command "(Get-PSDrive -Name $env:SystemDrive[0]).Free"') do set "FreeSpace=%%f"
 if not defined FreeSpace set "FreeSpace=0"
-echo Espace libre détecté : %FreeSpace% octets
+echo !OK! Espace libre détecté : %FreeSpace% octets
 if %FreeSpace% LSS 1000000000 (
-    echo [ERREUR] Moins de 1 Go d'espace libre. >> "%LOG_FILE%"
-    echo [ERREUR] Moins de 1 Go d'espace libre.
+    echo !FAIL! Moins de 1 Go d'espace libre. >> "%LOG_FILE%"
+    echo !FAIL! Moins de 1 Go d'espace libre.
     exit /b 1
 )
 
 :: === Vérifier la connexion Internet ===
 ping -n 2 8.8.8.8 >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERREUR] Aucune connexion Internet détectée. >> "%LOG_FILE%"
-    echo [ERREUR] Aucune connexion Internet détectée.
+    echo !FAIL! Aucune connexion Internet détectée. >> "%LOG_FILE%"
+    echo !FAIL! Aucune connexion Internet détectée.
     exit /b 1
 )
-echo Connexion Internet détectée.
+echo !OK! Connexion Internet détectée.
 
 :: === Étape 1 : Python + pip ===
 call :IsInstalled python.exe
@@ -65,7 +65,7 @@ powershell -NoProfile -Command "Try { (New-Object System.Net.WebClient).Download
 if not exist "%PYTHON_EXE%" (
     echo !FAIL! Python téléchargement échoué >> "%LOG_FILE%"
     echo !FAIL! Python téléchargement échoué
-    exit /b 1
+    goto python_done
 )
 %PYTHON_EXE% /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1
 if %errorlevel% neq 0 (
@@ -105,7 +105,7 @@ powershell -NoProfile -Command "Try { (New-Object System.Net.WebClient).Download
 if not exist "%CLAM_EXE%" (
     echo !FAIL! Échec du téléchargement de ClamWin >> "%LOG_FILE%"
     echo !FAIL! Échec du téléchargement de ClamWin
-    exit /b 1
+    goto clam_done
 )
 %CLAM_EXE% /SP- /VERYSILENT /NORESTART
 if %errorlevel% neq 0 (
@@ -126,7 +126,7 @@ powershell -NoProfile -Command "Try { (New-Object System.Net.WebClient).Download
 if not exist "%ZIP_EXE%" (
     echo !FAIL! Échec du téléchargement de 7-Zip >> "%LOG_FILE%"
     echo !FAIL! Échec du téléchargement de 7-Zip
-    exit /b 1
+    goto zip_done
 )
 %ZIP_EXE% /S
 if %errorlevel% neq 0 (
@@ -141,12 +141,11 @@ if %errorlevel% neq 0 (
 :: === Étape 5 : RustDesk ===
 call :IsInstalled rustdesk.exe
 if %errorlevel%==2 goto rust_done
-:: Vérifie si rustdesk est en cours d'exécution
 powershell -Command "Get-Process rustdesk -ErrorAction SilentlyContinue" >nul 2>&1
 if %errorlevel%==0 (
-    echo !FAIL! RustDesk est en cours d'exécution, fermeture nécessaire avant installation >> "%LOG_FILE%"
-    echo !FAIL! RustDesk est en cours d'exécution, fermeture nécessaire avant installation
-    exit /b 1
+    echo !FAIL! RustDesk est en cours d'exécution, installation annulée mais suite du script assurée. >> "%LOG_FILE%"
+    echo !FAIL! RustDesk est en cours d'exécution, installation annulée mais suite du script assurée.
+    goto rust_done
 )
 set RUST_URL=https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-windows_x64.exe
 set RUST_EXE=%INSTALL_DIR%\rustdesk_installer.exe
@@ -154,7 +153,7 @@ powershell -NoProfile -Command "Try { (New-Object System.Net.WebClient).Download
 if not exist "%RUST_EXE%" (
     echo !FAIL! Échec du téléchargement de RustDesk >> "%LOG_FILE%"
     echo !FAIL! Échec du téléchargement de RustDesk
-    exit /b 1
+    goto rust_done
 )
 %RUST_EXE% /SILENT
 if %errorlevel% neq 0 (
@@ -169,17 +168,18 @@ if %errorlevel% neq 0 (
 :: === Résumé final ===
 echo.
 echo ========= ✅ RÉCAPITULATIF =========
-echo Voir le fichier .\install_log.txt pour plus de détails.
+findstr /R "\[OK\] \[ERREUR\] \[DÉJÀ INSTALLE\]" "%LOG_FILE%"
 echo ====================================
 
-findstr /R "\[OK\] \[ERREUR\] \[DÉJÀ INSTALLE\]" "%LOG_FILE%"
-
 findstr /C:"[ERREUR]" "%LOG_FILE%" >nul
-if %errorlevel%==0 echo ⚠️ Certaines installations ont échoué. Voir le log ici : .\install_log.txt
+if %errorlevel%==0 (
+    echo ⚠️ Certaines installations ont échoué. Voir le log ici : .\install_log.txt
+) else (
+    echo ✅ Toutes les installations se sont déroulées avec succès.
+)
 
-:: === Fonction : Vérifie si un programme est déjà installé (basique) ===
+:: === Fonction : Vérifie si un programme est déjà installé ===
 :IsInstalled
-:: %1 = nom de fichier, ex: python.exe
 if "%~1"=="" (
     echo [ERREUR] Appel incorrect de :IsInstalled sans argument. >> "%LOG_FILE%"
     echo [ERREUR] Appel incorrect de :IsInstalled sans argument.
