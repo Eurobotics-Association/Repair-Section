@@ -1,4 +1,4 @@
-@echo off
+@echo on
 rem Initiator.bat – Installation automatique de Python, pip, magic-wormhole, ClamWin, 7-Zip et RustDesk
 rem Prérequis : exécuter en tant qu'administrateur, cmd.exe, certutil (intégré Windows 7+)
 
