@@ -1,130 +1,198 @@
 @echo on
-rem Initiator.bat – Installation automatique de Python, pip, magic-wormhole, ClamWin, 7-Zip et RustDesk
-rem Prérequis : exécuter en tant qu'administrateur, cmd.exe, certutil (intégré Windows 7+)
 
-setlocal EnableDelayedExpansion
+:: =============================================
+:: INITIATOR.BAT - Outil d'installation automatisée
+:: Compatible Windows 7, 10, 11 - Exécution PowerShell Admin requise
+:: =============================================
 
-rem Vérification des droits administrateur
-net session >nul 2>&1 || (
-echo \[ERROR] Droits administrateur requis.
-pause
-exit /b 1
+:: === Vérification des droits administrateur ===
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERREUR] Ce script doit être lancé en tant qu'administrateur.
+    pause
+    exit /b 1
 )
 
-rem Préparation du dossier et du log
-set "INSTALL\_DIR=%CD%\installers"
-set "LOG\_FILE=%CD%\install\_log.txt"
-if not exist "%INSTALL\_DIR%" mkdir "%INSTALL\_DIR%"
-echo Installation démarrée à %DATE% %TIME% > "%LOG\_FILE%"
+:: === Vérification si exécuté dans PowerShell ===
+where powershell >nul 2>&1 || (
+    echo [ERREUR] PowerShell non disponible.
+    pause
+    exit /b 1
+)
 
-rem Initialisation des statuts
-for %%X in PY WORM CLAM 7Z RUST do set "STATUS\_%%X=Pending"
+:: === Définition des symboles compatibles Win7 ===
+set "OK=[OK]"
+set "FAIL=[ERREUR]"
+set "SKIP=[DÉJÀ INSTALLE]"
 
-rem Fonction de téléchargement via certutil
-\:DownloadAndCheck
-rem  %1 = URL   %2 = destination
-certutil -urlcache -split -f "%\~1" "%\~2" >nul 2>&1
-if exist "%\~2" (
-echo \[INFO] Téléchargement réussi : %\~1 >> "%LOG\_FILE%"
-set "LAST\_STATUS=OK"
+setlocal enableextensions enabledelayedexpansion
+
+:: === Variables globales ===
+set "CURDIR=%CD%"
+set "INSTALL_DIR=%CD%\installers"
+set "LOG_FILE=%CD%\install_log.txt"
+
+:: === Nettoyage & Préparation ===
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+if exist "%LOG_FILE%" del /f /q "%LOG_FILE%"
+echo === Lancement de l'installation... === > "%LOG_FILE%"
+
+:: === Vérifier l'espace disque disponible ===
+for /f %%f in ('powershell -NoProfile -Command "(Get-PSDrive -Name $env:SystemDrive[0]).Free"') do set "FreeSpace=%%f"
+if not defined FreeSpace set "FreeSpace=0"
+echo Espace libre détecté : %FreeSpace% octets
+if %FreeSpace% LSS 1000000000 (
+    echo [ERREUR] Moins de 1 Go d'espace libre. >> "%LOG_FILE%"
+    echo [ERREUR] Moins de 1 Go d'espace libre.
+    exit /b 1
+)
+
+:: === Vérifier la connexion Internet ===
+ping -n 2 8.8.8.8 >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERREUR] Aucune connexion Internet détectée. >> "%LOG_FILE%"
+    echo [ERREUR] Aucune connexion Internet détectée.
+    exit /b 1
+)
+echo Connexion Internet détectée.
+
+:: === Étape 1 : Python + pip ===
+call :IsInstalled python.exe
+if %errorlevel%==2 goto python_done
+set PYTHON_URL=https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe
+set PYTHON_EXE=%INSTALL_DIR%\python_installer.exe
+powershell -NoProfile -Command "Try { (New-Object System.Net.WebClient).DownloadFile('%PYTHON_URL%', '%PYTHON_EXE%') } Catch { Exit 1 }"
+if not exist "%PYTHON_EXE%" (
+    echo !FAIL! Python téléchargement échoué >> "%LOG_FILE%"
+    echo !FAIL! Python téléchargement échoué
+    exit /b 1
+)
+%PYTHON_EXE% /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1
+if %errorlevel% neq 0 (
+    echo !FAIL! Python installation échouée >> "%LOG_FILE%"
+    echo !FAIL! Python installation échouée
 ) else (
-echo \[ERROR] Téléchargement échoué : %\~1 >> "%LOG\_FILE%"
-set "LAST\_STATUS=FAIL"
+    echo !OK! Python installé >> "%LOG_FILE%"
+    echo !OK! Python installé
 )
-goto \:eof
+:python_done
 
-rem 1) Python + magic-wormhole
+:: === Étape 2 : magic-wormhole ===
+call :IsInstalled pip.exe
+if %errorlevel%==2 goto wormhole_done
+pip show magic-wormhole >nul 2>&1
+if %errorlevel%==0 (
+    echo !SKIP! magic-wormhole déjà installé. >> "%LOG_FILE%"
+    echo !SKIP! magic-wormhole déjà installé.
+    goto wormhole_done
+)
+pip install magic-wormhole
+if %errorlevel% neq 0 (
+    echo !FAIL! magic-wormhole installation échouée >> "%LOG_FILE%"
+    echo !FAIL! magic-wormhole installation échouée
+) else (
+    echo !OK! magic-wormhole installé >> "%LOG_FILE%"
+    echo !OK! magic-wormhole installé
+)
+:wormhole_done
+
+:: === Étape 3 : ClamWin Antivirus ===
+call :IsInstalled ClamWin.exe
+if %errorlevel%==2 goto clam_done
+set CLAM_URL=https://downloads.sourceforge.net/project/clamwin/clamwin/0.103.2/clamwin-0.103.2-setup.exe
+set CLAM_EXE=%INSTALL_DIR%\clamwin_installer.exe
+powershell -NoProfile -Command "Try { (New-Object System.Net.WebClient).DownloadFile('%CLAM_URL%', '%CLAM_EXE%') } Catch { Exit 1 }"
+if not exist "%CLAM_EXE%" (
+    echo !FAIL! Échec du téléchargement de ClamWin >> "%LOG_FILE%"
+    echo !FAIL! Échec du téléchargement de ClamWin
+    exit /b 1
+)
+%CLAM_EXE% /SP- /VERYSILENT /NORESTART
+if %errorlevel% neq 0 (
+    echo !FAIL! ClamWin installation échouée >> "%LOG_FILE%"
+    echo !FAIL! ClamWin installation échouée
+) else (
+    echo !OK! ClamWin installé >> "%LOG_FILE%"
+    echo !OK! ClamWin installé
+)
+:clam_done
+
+:: === Étape 4 : 7-Zip ===
+call :IsInstalled 7z.exe
+if %errorlevel%==2 goto zip_done
+set ZIP_URL=https://www.7-zip.org/a/7z2401-x64.exe
+set ZIP_EXE=%INSTALL_DIR%\7zip_installer.exe
+powershell -NoProfile -Command "Try { (New-Object System.Net.WebClient).DownloadFile('%ZIP_URL%', '%ZIP_EXE%') } Catch { Exit 1 }"
+if not exist "%ZIP_EXE%" (
+    echo !FAIL! Échec du téléchargement de 7-Zip >> "%LOG_FILE%"
+    echo !FAIL! Échec du téléchargement de 7-Zip
+    exit /b 1
+)
+%ZIP_EXE% /S
+if %errorlevel% neq 0 (
+    echo !FAIL! 7-Zip installation échouée >> "%LOG_FILE%"
+    echo !FAIL! 7-Zip installation échouée
+) else (
+    echo !OK! 7-Zip installé >> "%LOG_FILE%"
+    echo !OK! 7-Zip installé
+)
+:zip_done
+
+:: === Étape 5 : RustDesk ===
+call :IsInstalled rustdesk.exe
+if %errorlevel%==2 goto rust_done
+:: Vérifie si rustdesk est en cours d'exécution
+powershell -Command "Get-Process rustdesk -ErrorAction SilentlyContinue" >nul 2>&1
+if %errorlevel%==0 (
+    echo !FAIL! RustDesk est en cours d'exécution, fermeture nécessaire avant installation >> "%LOG_FILE%"
+    echo !FAIL! RustDesk est en cours d'exécution, fermeture nécessaire avant installation
+    exit /b 1
+)
+set RUST_URL=https://github.com/rustdesk/rustdesk/releases/download/1.2.3/rustdesk-1.2.3-windows_x64.exe
+set RUST_EXE=%INSTALL_DIR%\rustdesk_installer.exe
+powershell -NoProfile -Command "Try { (New-Object System.Net.WebClient).DownloadFile('%RUST_URL%', '%RUST_EXE%') } Catch { Exit 1 }"
+if not exist "%RUST_EXE%" (
+    echo !FAIL! Échec du téléchargement de RustDesk >> "%LOG_FILE%"
+    echo !FAIL! Échec du téléchargement de RustDesk
+    exit /b 1
+)
+%RUST_EXE% /SILENT
+if %errorlevel% neq 0 (
+    echo !FAIL! RustDesk installation échouée >> "%LOG_FILE%"
+    echo !FAIL! RustDesk installation échouée
+) else (
+    echo !OK! RustDesk installé >> "%LOG_FILE%"
+    echo !OK! RustDesk installé
+)
+:rust_done
+
+:: === Résumé final ===
 echo.
-echo ===== Python + magic-wormhole =====
-where python >nul 2>&1
-if errorlevel 1 (
-set "PY\_EXE=%INSTALL\_DIR%\python.exe"
-call \:DownloadAndCheck "[https://www.python.org/ftp/python/3.11.4/python-3.11.4-amd64.exe](https://www.python.org/ftp/python/3.11.4/python-3.11.4-amd64.exe)" "%PY\_EXE%"
-if "%LAST\_STATUS%"=="OK" (
-"%PY\_EXE%" /quiet InstallAllUsers=1 PrependPath=1 >> "%LOG\_FILE%" 2>&1 && set "STATUS\_PY=OK" || set "STATUS\_PY=FAIL"
-pip install magic-wormhole >> "%LOG\_FILE%" 2>&1 && set "STATUS\_WORM=OK" || set "STATUS\_WORM=FAIL"
-) else (
-set "STATUS\_PY=FAIL"
-set "STATUS\_WORM=FAIL"
-)
-) else (
-echo \[SKIP] Python déjà installé.
-set "STATUS\_PY=Already"
-set "STATUS\_WORM=Already"
-echo Python: déjà installé >> "%LOG\_FILE%"
-echo magic-wormhole: déjà installé >> "%LOG\_FILE%"
-)
+echo ========= ✅ RÉCAPITULATIF =========
+echo Voir le fichier .\install_log.txt pour plus de détails.
+echo ====================================
 
-rem 2) ClamWin Antivirus
-echo.
-echo ===== ClamWin Antivirus =====
-reg query "HKLM\Software\ClamWin" >nul 2>&1
-if errorlevel 1 (
-set "CLAM\_EXE=%INSTALL\_DIR%\clamwin.exe"
-call \:DownloadAndCheck "[https://downloads.sourceforge.net/project/clamwin/clamwin/1.1.0.1/clamwin-1.1.0.1-setup.exe](https://downloads.sourceforge.net/project/clamwin/clamwin/1.1.0.1/clamwin-1.1.0.1-setup.exe)" "%CLAM\_EXE%"
-if "%LAST\_STATUS%"=="OK" (
-"%CLAM\_EXE%" /silent >> "%LOG\_FILE%" 2>&1 && set "STATUS\_CLAM=OK" || set "STATUS\_CLAM=FAIL"
-) else (
-set "STATUS\_CLAM=FAIL"
-)
-) else (
-echo \[SKIP] ClamWin déjà installé.
-set "STATUS\_CLAM=Already"
-echo ClamWin: déjà installé >> "%LOG\_FILE%"
-)
+findstr /R "\[OK\] \[ERREUR\] \[DÉJÀ INSTALLE\]" "%LOG_FILE%"
 
-rem 3) 7-Zip
-echo.
-echo ===== 7-Zip =====
-where 7z >nul 2>&1
-if errorlevel 1 (
-set "ZIP\_EXE=%INSTALL\_DIR%\7z.exe"
-call \:DownloadAndCheck "[https://www.7-zip.org/a/7z2301-x64.exe](https://www.7-zip.org/a/7z2301-x64.exe)" "%ZIP\_EXE%"
-if "%LAST\_STATUS%"=="OK" (
-"%ZIP\_EXE%" /S >> "%LOG\_FILE%" 2>&1 && set "STATUS\_7Z=OK" || set "STATUS\_7Z=FAIL"
-) else (
-set "STATUS\_7Z=FAIL"
-)
-) else (
-echo \[SKIP] 7-Zip déjà installé.
-set "STATUS\_7Z=Already"
-echo 7-Zip: déjà installé >> "%LOG\_FILE%"
-)
+findstr /C:"[ERREUR]" "%LOG_FILE%" >nul
+if %errorlevel%==0 echo ⚠️ Certaines installations ont échoué. Voir le log ici : .\install_log.txt
 
-rem 4) RustDesk
-echo.
-echo ===== RustDesk =====
-reg query "HKLM\Software\RustDesk" >nul 2>&1
-if errorlevel 1 (
-set "RUST\_EXE=%INSTALL\_DIR%\rustdesk.exe"
-call \:DownloadAndCheck "[https://github.com/rustdesk/rustdesk/releases/download/1.2.0/rustdesk-1.2.0-win.exe](https://github.com/rustdesk/rustdesk/releases/download/1.2.0/rustdesk-1.2.0-win.exe)" "%RUST\_EXE%"
-if "%LAST\_STATUS%"=="OK" (
-"%RUST\_EXE%" /S >> "%LOG\_FILE%" 2>&1 && set "STATUS\_RUST=OK" || set "STATUS\_RUST=FAIL"
-) else (
-set "STATUS\_RUST=FAIL"
+:: === Fonction : Vérifie si un programme est déjà installé (basique) ===
+:IsInstalled
+:: %1 = nom de fichier, ex: python.exe
+if "%~1"=="" (
+    echo [ERREUR] Appel incorrect de :IsInstalled sans argument. >> "%LOG_FILE%"
+    echo [ERREUR] Appel incorrect de :IsInstalled sans argument.
+    exit /b 1
 )
-) else (
-echo \[SKIP] RustDesk déjà installé.
-set "STATUS\_RUST=Already"
-echo RustDesk: déjà installé >> "%LOG\_FILE%"
+where %1 >nul 2>&1
+if %errorlevel%==0 (
+    echo !SKIP! %1 déjà installé. >> "%LOG_FILE%"
+    echo !SKIP! %1 déjà installé.
+    exit /b 2
 )
+echo !OK! %1 n'est pas installé.
+exit /b 0
 
-rem Récapitulatif et statut final
-echo.
-echo ===== Résultats =====
-echo Python           %STATUS\_PY%
-echo magic-wormhole  %STATUS\_WORM%
-echo ClamWin          %STATUS\_CLAM%
-echo 7-Zip            %STATUS\_7Z%
-echo RustDesk         %STATUS\_RUST%
-echo.
-set "FAIL=0"
-for %%X in PY WORM CLAM 7Z RUST do if "!STATUS\_%%X!"=="FAIL" set "FAIL=1"
-if %FAIL%==1 (
-echo \[ERROR] Certaines installations ont échoué. Voir %LOG\_FILE%
-) else (
-echo \[OK] Toutes les installations ont réussi.
-)
-
-echo.
-pause
+endlocal
+exit /b 0
