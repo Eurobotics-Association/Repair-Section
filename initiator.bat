@@ -1,28 +1,28 @@
 @echo off
 rem Initiator.bat – Installation automatique de Python, pip, magic-wormhole, ClamWin, 7-Zip et RustDesk
-rem Prérequis : exécuter en tant qu'administrateur, cmd.exe, certutil (intégré dans Windows 7+)
+rem Prérequis : exécuter en tant qu'administrateur, cmd.exe, certutil (intégré Windows 7+)
 
 setlocal EnableDelayedExpansion
 
-\:: Vérification des droits administrateurs
+rem Vérification des droits administrateur
 net session >nul 2>&1 || (
 echo \[ERROR] Droits administrateur requis.
 pause
 exit /b 1
 )
 
-\:: Préparation du dossier d'installation et du log
+rem Préparation du dossier et du log
 set "INSTALL\_DIR=%CD%\installers"
 set "LOG\_FILE=%CD%\install\_log.txt"
 if not exist "%INSTALL\_DIR%" mkdir "%INSTALL\_DIR%"
 echo Installation démarrée à %DATE% %TIME% > "%LOG\_FILE%"
 
-\:: Initialisation des statuts
+rem Initialisation des statuts
 for %%X in PY WORM CLAM 7Z RUST do set "STATUS\_%%X=Pending"
 
-\:: Fonction : téléchargement via certutil
+rem Fonction de téléchargement via certutil
 \:DownloadAndCheck
-rem %1 = URL  |  %2 = Chemin complet de destination
+rem  %1 = URL   %2 = destination
 certutil -urlcache -split -f "%\~1" "%\~2" >nul 2>&1
 if exist "%\~2" (
 echo \[INFO] Téléchargement réussi : %\~1 >> "%LOG\_FILE%"
@@ -33,8 +33,7 @@ set "LAST\_STATUS=FAIL"
 )
 goto \:eof
 
-\:: ----------------------------------------
-\:: 1) Python + magic-wormhole
+rem 1) Python + magic-wormhole
 echo.
 echo ===== Python + magic-wormhole =====
 where python >nul 2>&1
@@ -56,8 +55,7 @@ echo Python: déjà installé >> "%LOG\_FILE%"
 echo magic-wormhole: déjà installé >> "%LOG\_FILE%"
 )
 
-\:: ----------------------------------------
-\:: 2) ClamWin Antivirus
+rem 2) ClamWin Antivirus
 echo.
 echo ===== ClamWin Antivirus =====
 reg query "HKLM\Software\ClamWin" >nul 2>&1
@@ -75,8 +73,7 @@ set "STATUS\_CLAM=Already"
 echo ClamWin: déjà installé >> "%LOG\_FILE%"
 )
 
-\:: ----------------------------------------
-\:: 3) 7-Zip
+rem 3) 7-Zip
 echo.
 echo ===== 7-Zip =====
 where 7z >nul 2>&1
@@ -94,8 +91,7 @@ set "STATUS\_7Z=Already"
 echo 7-Zip: déjà installé >> "%LOG\_FILE%"
 )
 
-\:: ----------------------------------------
-\:: 4) RustDesk
+rem 4) RustDesk
 echo.
 echo ===== RustDesk =====
 reg query "HKLM\Software\RustDesk" >nul 2>&1
@@ -113,8 +109,7 @@ set "STATUS\_RUST=Already"
 echo RustDesk: déjà installé >> "%LOG\_FILE%"
 )
 
-\:: ----------------------------------------
-\:: Récapitulatif et retour final
+rem Récapitulatif et statut final
 echo.
 echo ===== Résultats =====
 echo Python           %STATUS\_PY%
@@ -130,5 +125,6 @@ echo \[ERROR] Certaines installations ont échoué. Voir %LOG\_FILE%
 ) else (
 echo \[OK] Toutes les installations ont réussi.
 )
+
 echo.
 pause
