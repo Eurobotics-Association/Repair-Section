@@ -1,8 +1,9 @@
-@echo off
+@echo on
 
 :: =============================================
 :: SAUVEGARDOR.BAT - Sauvegarde compressée des répertoires utilisateurs
 :: Compatible Windows 7, 10, 11 - Exécution Admin requise
+:: v.20250609 / eurobotics - tested ok - released
 :: =============================================
 
 :: === Vérifier les droits admin ===
