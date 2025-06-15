@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Zorin Post-Install Script
 # Eurobotics 2025 - GNU
-# v.20250616.0930
+# v.20250615.2100
 
 set -euo pipefail
 trap 'log_error "Script interrupted. Exiting..."; exit 1' INT TERM
