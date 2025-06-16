@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Zorin Post-Install Script
 # Eurobotics 2025 - GNU
-# v.20250616.1700
+# v.20250616.1730
 
 set -euo pipefail
 trap 'log_error "Script interrupted. Exiting..."; exit 1' INT TERM
@@ -235,23 +235,48 @@ function install_core_utilities() {
         log_info "Dropbox already installed"
     fi
 
-    # Install RustDesk from official repo
+    # Install RustDesk from official repo with robust handling
     log_info "Installing RustDesk..."
     if ! command -v rustdesk &>/dev/null; then
-        # Download GPG key with curl
-        curl -sS https://deb.rustdesk.com/repo.key | gpg --dearmor -o /usr/share/keyrings/rustdesk.gpg
+        # Create directory for keyrings if needed
+        mkdir -p /usr/share/keyrings
         
-        # Add repository
-        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/rustdesk.gpg] https://deb.rustdesk.com/ stable main" > /etc/apt/sources.list.d/rustdesk.list
+        # Download GPG key with retries and better error handling
+        local GPG_SUCCESS=0
+        for i in {1..3}; do
+            log_info "Downloading RustDesk GPG key (attempt $i/3)..."
+            if curl -fLsS https://deb.rustdesk.com/repo.key -o /tmp/rustdesk.key; then
+                GPG_SUCCESS=1
+                break
+            else
+                log_warn "Failed to download RustDesk GPG key. Retrying in 2 seconds..."
+                sleep 2
+            fi
+        done
         
-        # Refresh and install
-        apt-get -o Acquire::ForceIPv4=true update
-        apt-get -o Acquire::ForceIPv4=true install -y rustdesk
-        
-        # Enable and start service
-        systemctl enable rustdesk
-        systemctl start rustdesk
-        log_success "RustDesk installed via official repository. Will update with system updates."
+        if [ $GPG_SUCCESS -eq 1 ]; then
+            # Import GPG key non-interactively
+            if gpg --dearmor /tmp/rustdesk.key -o /usr/share/keyrings/rustdesk.gpg; then
+                # Add repository
+                echo "deb [arch=amd64 signed-by=/usr/share/keyrings/rustdesk.gpg] https://deb.rustdesk.com/ stable main" > /etc/apt/sources.list.d/rustdesk.list
+                
+                # Refresh and install
+                apt-get -o Acquire::ForceIPv4=true update
+                if apt-get -o Acquire::ForceIPv4=true install -y rustdesk; then
+                    # Enable and start service
+                    systemctl enable rustdesk
+                    systemctl start rustdesk
+                    log_success "RustDesk installed via official repository. Will update with system updates."
+                else
+                    log_warn "RustDesk installation failed from repository"
+                fi
+            else
+                log_warn "Failed to import RustDesk GPG key"
+            fi
+            rm -f /tmp/rustdesk.key
+        else
+            log_warn "Skipping RustDesk installation due to GPG key download failure"
+        fi
     else
         log_info "RustDesk already installed"
     fi
