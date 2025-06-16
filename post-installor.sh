@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Zorin Post-Install Script
 # Eurobotics 2025 - GNU
-# v.20250616.1500
+# v.20250616.1700
 
 set -euo pipefail
 trap 'log_error "Script interrupted. Exiting..."; exit 1' INT TERM
@@ -55,9 +55,11 @@ function setup_ssh_server() {
     # Install OpenSSH Server
     apt-get -o Acquire::ForceIPv4=true install -y openssh-server
     
-    # Configure SSH
+    # Configure SSH - KEEP PASSWORD AUTHENTICATION ENABLED
     sed -i 's/#Port 22/Port 22/' /etc/ssh/sshd_config
-    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+    
+    # Ensure password authentication is enabled
+    sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
     
     # Enable SSH service
     systemctl enable ssh
@@ -68,7 +70,8 @@ function setup_ssh_server() {
         ufw allow 22/tcp
     fi
     
-    log_success "SSH Server installed and secured. Connect using SSH keys."
+    log_success "SSH Server installed with password authentication enabled."
+    log_warn "For improved security, consider setting up SSH key authentication later."
 }
 
 function install_security_tools() {
@@ -209,7 +212,10 @@ function install_core_utilities() {
         thonny \
         flatpak \
         unzip \
-        curl || log_warn "Some utilities failed to install"
+        curl \
+        magic-wormhole \
+        python3-pip \
+        python3-cryptography || log_warn "Some utilities failed to install"
 
     # Install Dropbox from official source (adds repo for updates)
     log_info "Installing Dropbox..."
@@ -232,7 +238,7 @@ function install_core_utilities() {
     # Install RustDesk from official repo
     log_info "Installing RustDesk..."
     if ! command -v rustdesk &>/dev/null; then
-        # Download GPG key with curl instead of wget
+        # Download GPG key with curl
         curl -sS https://deb.rustdesk.com/repo.key | gpg --dearmor -o /usr/share/keyrings/rustdesk.gpg
         
         # Add repository
@@ -256,6 +262,12 @@ function install_core_utilities() {
 
     # Configure Flatpak
     flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+    
+    # Upgrade Python tools and install crypto dependencies
+    log_info "Configuring Python environment..."
+    pip3 install --upgrade pip wheel
+    pip3 install pycryptodome requests cryptography
+    
     log_success "Core utilities installed."
 }
 
