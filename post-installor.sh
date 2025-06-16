@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Zorin Post-Install Script
 # Eurobotics 2025 - GNU
-# v.20250616.1430
+# v.20250616.1500
 
 set -euo pipefail
 trap 'log_error "Script interrupted. Exiting..."; exit 1' INT TERM
@@ -26,6 +26,9 @@ if [[ $EUID -ne 0 ]]; then
     log_error "This script must be run as root. Use: sudo $0"
 fi
 
+# Set locale to C for consistent command output
+export LC_ALL=C
+
 # Check internet connectivity
 function check_internet() {
     log_info "Verifying internet connection..."
@@ -37,11 +40,11 @@ function check_internet() {
 
 function update_system() {
     log_info "Updating package lists and upgrading system..."
-    apt update && apt full-upgrade -y
+    apt-get -o Acquire::ForceIPv4=true update && apt-get -o Acquire::ForceIPv4=true full-upgrade -y
     log_success "System updated successfully."
     
     log_info "Configuring automatic updates..."
-    apt install -y unattended-upgrades
+    apt-get -o Acquire::ForceIPv4=true install -y unattended-upgrades
     dpkg-reconfigure -plow unattended-upgrades
     log_success "Automatic updates configured."
 }
@@ -50,7 +53,7 @@ function setup_ssh_server() {
     log_info "Setting up OpenSSH Server..."
     
     # Install OpenSSH Server
-    apt install -y openssh-server
+    apt-get -o Acquire::ForceIPv4=true install -y openssh-server
     
     # Configure SSH
     sed -i 's/#Port 22/Port 22/' /etc/ssh/sshd_config
@@ -70,7 +73,7 @@ function setup_ssh_server() {
 
 function install_security_tools() {
     log_info "Installing security tools..."
-    apt install -y clamav clamav-daemon gufw ufw || log_warn "Partial installation of security tools"
+    apt-get -o Acquire::ForceIPv4=true install -y clamav clamav-daemon gufw ufw || log_warn "Partial installation of security tools"
     
     systemctl enable --now clamav-freshclam
     log_success "Security tools installed."
@@ -112,8 +115,6 @@ function configure_firewall() {
     declare -a rustdesk_ports=(
         21115:21117/tcp # RustDesk direct
         21116/udp       # RustDesk NAT traversal
-        21118/tcp       # RustDesk web console
-        21119/tcp       # RustDesk key exchange
     )
 
     # Apple ecosystem ports
@@ -153,11 +154,11 @@ function install_ngrok() {
     # Ensure snap is available
     if ! command -v snap &>/dev/null; then
         log_info "Installing snapd"
-        apt install -y snapd
+        apt-get -o Acquire::ForceIPv4=true install -y snapd
     fi
     
     # Check if already installed
-    if snap list ngrok &>/dev/null; then
+    if snap list ngrok 2>/dev/null | grep -q ngrok; then
         log_info "Ngrok already installed via snap"
         return
     fi
@@ -185,7 +186,8 @@ function install_serveo() {
     fi
     
     # Create alias for all users
-    echo "alias serveo='ssh -p 2222 -R 80:localhost:80 serveo'" >> /etc/profile.d/serveo.sh
+    echo "alias serveo='ssh -p 2222 -R 80:localhost:80 serveo'" > /etc/profile.d/serveo.sh
+    chmod +x /etc/profile.d/serveo.sh
     
     log_success "Serveo configured. Use: serveo"
 }
@@ -196,25 +198,32 @@ function install_core_utilities() {
     # Install snapd if not present
     if ! command -v snap &>/dev/null; then
         log_info "Installing snapd"
-        apt install -y snapd
+        apt-get -o Acquire::ForceIPv4=true install -y snapd
     fi
     
     # Essential utilities
-    apt install -y \
+    apt-get -o Acquire::ForceIPv4=true install -y \
         timeshift \
         wine \
-        bottles \
         inxi \
         thonny \
         flatpak \
-        unzip || log_warn "Some utilities failed to install"
+        unzip \
+        curl || log_warn "Some utilities failed to install"
 
     # Install Dropbox from official source (adds repo for updates)
     log_info "Installing Dropbox..."
     if ! command -v dropbox &>/dev/null; then
-        wget -O /tmp/dropbox.deb "https://www.dropbox.com/download?dl=packages/ubuntu/dropbox_2020.03.04_amd64.deb"
-        apt install -y /tmp/dropbox.deb
+        curl -L -o /tmp/dropbox.deb "https://www.dropbox.com/download?dl=packages/ubuntu/dropbox_2020.03.04_amd64.deb"
+        apt-get -o Acquire::ForceIPv4=true install -y /tmp/dropbox.deb
         rm -f /tmp/dropbox.deb
+        
+        # Ensure repository is added for updates
+        if [ ! -f /etc/apt/sources.list.d/dropbox.list ]; then
+            echo "deb [arch=i386,amd64] http://linux.dropbox.com/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/dropbox.list
+            apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 1C61A2656FB57B7E4DE0F4C1FC918B335044912E
+            apt-get -o Acquire::ForceIPv4=true update
+        fi
         log_success "Dropbox installed. It will auto-update via its repository."
     else
         log_info "Dropbox already installed"
@@ -223,12 +232,15 @@ function install_core_utilities() {
     # Install RustDesk from official repo
     log_info "Installing RustDesk..."
     if ! command -v rustdesk &>/dev/null; then
-        wget -qO- https://deb.rustdesk.com/repo.key | gpg --dearmor -o /usr/share/keyrings/rustdesk.gpg
+        # Download GPG key with curl instead of wget
+        curl -sS https://deb.rustdesk.com/repo.key | gpg --dearmor -o /usr/share/keyrings/rustdesk.gpg
+        
+        # Add repository
         echo "deb [arch=amd64 signed-by=/usr/share/keyrings/rustdesk.gpg] https://deb.rustdesk.com/ stable main" > /etc/apt/sources.list.d/rustdesk.list
         
         # Refresh and install
-        apt update
-        apt install -y rustdesk
+        apt-get -o Acquire::ForceIPv4=true update
+        apt-get -o Acquire::ForceIPv4=true install -y rustdesk
         
         # Enable and start service
         systemctl enable rustdesk
@@ -237,6 +249,10 @@ function install_core_utilities() {
     else
         log_info "RustDesk already installed"
     fi
+
+    # Install Bottles via Flatpak
+    log_info "Installing Bottles..."
+    flatpak install -y --system flathub com.usebottles.bottles || log_warn "Bottles installation failed"
 
     # Configure Flatpak
     flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
@@ -280,10 +296,10 @@ function remove_libreoffice() {
     # Check if any LibreOffice packages are installed
     if dpkg -l | grep -q "libreoffice"; then
         # Purge LibreOffice packages
-        apt purge -y "${libreoffice_pkgs[@]}" || log_warn "Some LibreOffice packages couldn't be removed"
+        apt-get -o Acquire::ForceIPv4=true purge -y "${libreoffice_pkgs[@]}" || log_warn "Some LibreOffice packages couldn't be removed"
         
         # Clean up dependencies
-        apt autoremove -y
+        apt-get -o Acquire::ForceIPv4=true autoremove -y
         log_success "LibreOffice removed and replaced by OnlyOffice"
     else
         log_info "LibreOffice not installed - nothing to remove"
@@ -316,7 +332,7 @@ function fix_printer_issues() {
     systemctl restart cups
     
     # Install Brother printer drivers
-    apt install -y printer-driver-brlaser printer-driver-c2esp
+    apt-get -o Acquire::ForceIPv4=true install -y printer-driver-brlaser printer-driver-c2esp
     
     log_info "Reconfiguring printer system..."
     dpkg-reconfigure cups
@@ -339,8 +355,8 @@ function analyze_logs() {
 
 function cleanup() {
     log_info "Performing system cleanup..."
-    apt autoremove -y
-    apt clean
+    apt-get -o Acquire::ForceIPv4=true autoremove -y
+    apt-get -o Acquire::ForceIPv4=true clean
     log_success "Cleanup completed."
 }
 
@@ -350,7 +366,7 @@ function main() {
     setup_ssh_server
     install_security_tools
     configure_firewall
-    install_ngrok       # Now via snap
+    install_ngrok
     install_serveo
     install_core_utilities
     install_onlyoffice
