@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Zorin Post-Install Script
 # Eurobotics 2025 - GNU
-# v.20250616.1730
+# v.20250616.1830
 
 set -euo pipefail
 trap 'log_error "Script interrupted. Exiting..."; exit 1' INT TERM
@@ -195,6 +195,32 @@ function install_serveo() {
     log_success "Serveo configured. Use: serveo"
 }
 
+function install_rustdesk_fallback() {
+    log_info "Attempting fallback RustDesk installation..."
+    local TEMP_DIR
+    TEMP_DIR=$(mktemp -d)
+    
+    # Determine architecture
+    local ARCH
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64) ARCH="amd64" ;;
+        aarch64) ARCH="arm64" ;;
+        *) ARCH="amd64" ;;  # Default to amd64
+    esac
+    
+    # Download latest .deb package directly
+    if curl -fLsS "https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-${ARCH}.deb" -o "$TEMP_DIR/rustdesk.deb"; then
+        apt-get install -y "$TEMP_DIR/rustdesk.deb"
+        systemctl enable rustdesk
+        systemctl start rustdesk
+        log_success "RustDesk installed via direct download"
+    else
+        log_warn "Fallback RustDesk installation failed"
+    fi
+    rm -rf "$TEMP_DIR"
+}
+
 function install_core_utilities() {
     log_info "Installing core utilities..."
     
@@ -275,7 +301,8 @@ function install_core_utilities() {
             fi
             rm -f /tmp/rustdesk.key
         else
-            log_warn "Skipping RustDesk installation due to GPG key download failure"
+            log_warn "Repository unavailable, trying fallback method"
+            install_rustdesk_fallback
         fi
     else
         log_info "RustDesk already installed"
@@ -288,10 +315,10 @@ function install_core_utilities() {
     # Configure Flatpak
     flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
     
-    # Upgrade Python tools and install crypto dependencies
+    # Upgrade Python tools and install crypto dependencies (suppress warnings)
     log_info "Configuring Python environment..."
-    pip3 install --upgrade pip wheel
-    pip3 install pycryptodome requests cryptography
+    pip3 install --upgrade pip wheel 2>/dev/null || true
+    pip3 install pycryptodome requests cryptography 2>/dev/null || true
     
     log_success "Core utilities installed."
 }
@@ -308,38 +335,35 @@ function install_onlyoffice() {
 
 function remove_libreoffice() {
     log_info "Removing LibreOffice suite..."
+    local removed=0
     
-    # List of LibreOffice packages to remove
-    local libreoffice_pkgs=(
-        libreoffice-base 
-        libreoffice-calc 
-        libreoffice-core
-        libreoffice-draw 
-        libreoffice-gnome 
-        libreoffice-gtk3 
-        libreoffice-help-common 
-        libreoffice-help-en-us 
-        libreoffice-impress 
-        libreoffice-math 
-        libreoffice-ogltrans 
-        libreoffice-pdfimport 
-        libreoffice-style-colibre 
-        libreoffice-style-elementary 
-        libreoffice-style-tango 
-        libreoffice-writer
-        libreoffice-common
-    )
-    
-    # Check if any LibreOffice packages are installed
+    # Remove APT packages
     if dpkg -l | grep -q "libreoffice"; then
-        # Purge LibreOffice packages
-        apt-get -o Acquire::ForceIPv4=true purge -y "${libreoffice_pkgs[@]}" || log_warn "Some LibreOffice packages couldn't be removed"
-        
-        # Clean up dependencies
+        log_info "Removing APT-installed LibreOffice"
+        apt-get -o Acquire::ForceIPv4=true purge -y libreoffice* || log_warn "Some APT packages couldn't be removed"
+        removed=1
+    fi
+    
+    # Remove Snap installation
+    if command -v snap &>/dev/null && snap list 2>/dev/null | grep -q libreoffice; then
+        log_info "Removing Snap-installed LibreOffice"
+        snap remove libreoffice
+        removed=1
+    fi
+    
+    # Remove Flatpak installation
+    if command -v flatpak &>/dev/null && flatpak list 2>/dev/null | grep -q org.libreoffice.LibreOffice; then
+        log_info "Removing Flatpak-installed LibreOffice"
+        flatpak uninstall -y org.libreoffice.LibreOffice
+        removed=1
+    fi
+    
+    # Clean up
+    if [ $removed -eq 1 ]; then
         apt-get -o Acquire::ForceIPv4=true autoremove -y
         log_success "LibreOffice removed and replaced by OnlyOffice"
     else
-        log_info "LibreOffice not installed - nothing to remove"
+        log_info "LibreOffice not found - nothing to remove"
     fi
 }
 
