@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Zorin Post-Install Script
 # Eurobotics 2025 - GNU
-# v.20250616.1830
+# v.20250620.1200
 
 set -euo pipefail
 trap 'log_error "Script interrupted. Exiting..."; exit 1' INT TERM
@@ -44,9 +44,27 @@ function update_system() {
     log_success "System updated successfully."
     
     log_info "Configuring automatic updates..."
-    apt-get -o Acquire::ForceIPv4=true install -y unattended-upgrades
-    dpkg-reconfigure -plow unattended-upgrades
-    log_success "Automatic updates configured."
+    apt-get -o Acquire::ForceIPv4=true install -y unattended-upgrades apt-listchanges
+    local CODENAME
+    CODENAME=$(lsb_release -cs)
+    cat >/etc/apt/apt.conf.d/20auto-upgrades <<EOF
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::Download-Upgradeable-Packages "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+    cat >/etc/apt/apt.conf.d/50unattended-upgrades <<EOF
+Unattended-Upgrade::Allowed-Origins {
+        "Ubuntu ${CODENAME}-security";
+        "Ubuntu ${CODENAME}-updates";
+        "Ubuntu ${CODENAME}-esm-infra";
+};
+Unattended-Upgrade::Package-Blacklist {};
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";
+EOF
+    systemctl enable --now unattended-upgrades
+    log_success "Automatic security updates configured."
 }
 
 function setup_ssh_server() {
@@ -78,8 +96,76 @@ function install_security_tools() {
     log_info "Installing security tools..."
     apt-get -o Acquire::ForceIPv4=true install -y clamav clamav-daemon gufw ufw || log_warn "Partial installation of security tools"
     
+    configure_clamav
+    log_success "Security tools installed and configured."
+}
+
+function configure_clamav() {
+    log_info "Configuring ClamAV for downloads and monthly scans..."
+
+    if [[ -f /etc/clamav/clamd.conf ]]; then
+        sed -i 's/^Example/#Example/' /etc/clamav/clamd.conf
+    fi
+
     systemctl enable --now clamav-freshclam
-    log_success "Security tools installed."
+    systemctl enable --now clamav-daemon || log_warn "ClamAV daemon failed to start"
+
+    mkdir -p /etc/clamav
+    cat >/etc/clamav/onaccess.conf <<'EOF'
+/home/*/Downloads
+/root/Downloads
+EOF
+
+    cat >/etc/systemd/system/clamav-onaccess.service <<'EOF'
+[Unit]
+Description=ClamAV On-Access Scanner
+After=clamav-daemon.service network-online.target
+Wants=clamav-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/clamonacc --fdpass --watch-list /etc/clamav/onaccess.conf --log /var/log/clamav/clamav-onaccess.log
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    cat >/usr/local/sbin/clamav-monthly-scan.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+LOG_DIR="/var/log/clamav"
+mkdir -p "$LOG_DIR"
+    nice -n 19 ionice -c3 clamscan -r --infected --log "$LOG_DIR/monthly-scan.log" /home
+EOF
+    chmod +x /usr/local/sbin/clamav-monthly-scan.sh
+
+    cat >/etc/systemd/system/clamav-monthly-scan.service <<'EOF'
+[Unit]
+Description=ClamAV Monthly Full Scan (low priority)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/clamav-monthly-scan.sh
+EOF
+
+    cat >/etc/systemd/system/clamav-monthly-scan.timer <<'EOF'
+[Unit]
+Description=Monthly ClamAV scan
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now clamav-onaccess.service
+    systemctl enable --now clamav-monthly-scan.timer
+    log_success "ClamAV on-access scanning and monthly scans enabled."
 }
 
 function configure_firewall() {
@@ -112,6 +198,7 @@ function configure_firewall() {
         3478/tcp   # STUN
         3478/udp
         5353/udp   # mDNS
+        9993/udp   # ZeroTier
     )
 
     # RustDesk ports
@@ -239,27 +326,11 @@ function install_core_utilities() {
         flatpak \
         unzip \
         curl \
+        gnupg \
+        rsync \
         magic-wormhole \
         python3-pip \
         python3-cryptography || log_warn "Some utilities failed to install"
-
-    # Install Dropbox from official source (adds repo for updates)
-    log_info "Installing Dropbox..."
-    if ! command -v dropbox &>/dev/null; then
-        curl -L -o /tmp/dropbox.deb "https://www.dropbox.com/download?dl=packages/ubuntu/dropbox_2020.03.04_amd64.deb"
-        apt-get -o Acquire::ForceIPv4=true install -y /tmp/dropbox.deb
-        rm -f /tmp/dropbox.deb
-        
-        # Ensure repository is added for updates
-        if [ ! -f /etc/apt/sources.list.d/dropbox.list ]; then
-            echo "deb [arch=i386,amd64] http://linux.dropbox.com/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/dropbox.list
-            apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 1C61A2656FB57B7E4DE0F4C1FC918B335044912E
-            apt-get -o Acquire::ForceIPv4=true update
-        fi
-        log_success "Dropbox installed. It will auto-update via its repository."
-    else
-        log_info "Dropbox already installed"
-    fi
 
     # Install RustDesk from official repo with robust handling
     log_info "Installing RustDesk..."
@@ -325,11 +396,27 @@ function install_core_utilities() {
 
 function install_onlyoffice() {
     log_info "Installing OnlyOffice..."
+    if ! dpkg -l | grep -q onlyoffice-desktopeditors; then
+        mkdir -p /usr/share/keyrings
+        if curl -fLsS https://download.onlyoffice.com/GPG-KEY-ONLYOFFICE -o /tmp/onlyoffice.key; then
+            gpg --dearmor /tmp/onlyoffice.key -o /usr/share/keyrings/onlyoffice.gpg
+            rm -f /tmp/onlyoffice.key
+            echo "deb [signed-by=/usr/share/keyrings/onlyoffice.gpg] https://download.onlyoffice.com/repo/debian squeeze main" > /etc/apt/sources.list.d/onlyoffice.list
+            apt-get -o Acquire::ForceIPv4=true update
+            if apt-get -o Acquire::ForceIPv4=true install -y onlyoffice-desktopeditors; then
+                log_success "OnlyOffice installed via official repository."
+                remove_libreoffice
+                return
+            fi
+        fi
+        log_warn "OnlyOffice APT install failed, trying Flatpak fallback..."
+    fi
+
     if flatpak install -y --system flathub org.onlyoffice.desktopeditors; then
-        log_success "OnlyOffice installed."
+        log_success "OnlyOffice installed via Flatpak."
         remove_libreoffice
     else
-        log_warn "OnlyOffice installation failed"
+        log_warn "OnlyOffice installation failed."
     fi
 }
 
@@ -340,7 +427,7 @@ function remove_libreoffice() {
     # Remove APT packages
     if dpkg -l | grep -q "libreoffice"; then
         log_info "Removing APT-installed LibreOffice"
-        apt-get -o Acquire::ForceIPv4=true purge -y libreoffice* || log_warn "Some APT packages couldn't be removed"
+        apt-get -o Acquire::ForceIPv4=true purge -y libreoffice* libreoffice-* libreoffice-common || log_warn "Some APT packages couldn't be removed"
         removed=1
     fi
     
@@ -401,6 +488,20 @@ function fix_printer_issues() {
     log_success "Printer issues addressed. Try printing again."
 }
 
+function install_zerotier() {
+    log_info "Installing ZeroTier..."
+    if ! command -v zerotier-cli &>/dev/null; then
+        if curl -fsSL https://install.zerotier.com | bash; then
+            systemctl enable --now zerotier-one
+            log_success "ZeroTier installed and enabled."
+        else
+            log_warn "ZeroTier installation failed."
+        fi
+    else
+        log_info "ZeroTier already installed."
+    fi
+}
+
 function analyze_logs() {
     log_info "Checking system logs for errors..."
     local LOG_REPORT="/var/log/zorin-log-analysis.txt"
@@ -431,6 +532,7 @@ function main() {
     install_serveo
     install_core_utilities
     install_onlyoffice
+    install_zerotier
     verify_hardware
     fix_printer_issues
     analyze_logs
