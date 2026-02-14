@@ -163,11 +163,9 @@ The future `mint-dpbx_install.sh` will not install or configure rclone for you. 
 curl https://rclone.org/install.sh | sudo bash
 ```
 
-### Option B – APT (Mint / Ubuntu)
-
 ```bash
 sudo apt update
-sudo apt install -y rclone fuse3 network-manager
+sudo apt install -y fuse3
 ```
 
 Verify:
