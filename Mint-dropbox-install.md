@@ -14,7 +14,7 @@ The command and systemd unit below are the result of weeks of trial‑and‑erro
 ## Defaults – you MUST adapt to your needs before use
 
 ```bash
-My_Dropbox_Folder="$HOME/Dpbx-V"   # Default local mount folder – change to your own path
+My_Dropbox_Folder="/media/Dpbx-V"   # Default mount folder (recommended: /media) – adapt to your needs
 My_rclone_dpbx_label="dpbx"        # Default rclone remote label – change to your own label
 ```
 
@@ -163,10 +163,18 @@ The future `mint-dpbx_install.sh` will not install or configure rclone for you. 
 curl https://rclone.org/install.sh | sudo bash
 ```
 
+### Option B – APT (Mint / Ubuntu)
+
 ```bash
 sudo apt update
-sudo apt install -y fuse3
+sudo apt install -y rclone fuse3
 ```
+
+**Note on `network-manager` / `nm-online`:**
+
+* On Linux Mint Cinnamon, NetworkManager is typically already present.
+* We **do not** force-install NetworkManager in this doc.
+* If `nm-online` exists, we can optionally use it in the systemd unit to wait briefly for connectivity; otherwise the unit still works without it.
 
 Verify:
 
@@ -254,10 +262,24 @@ sudo sed -i 's/^# *user_allow_other/user_allow_other/' /etc/fuse.conf
 
 This command is known to work reliably with Dropbox.
 
-Example (replace `<USER>` or use `$HOME`):
+**Important detail (root vs remote default):**
+
+* Use `REMOTE:/` (with the trailing `/`) to mount the **root** of the Dropbox namespace.
+* On Dropbox Business, this is what you want when you expect to see Team/Business folders at the mount root.
+
+### 7.1 Example mount under `/media` (recommended for “Device-like” location)
 
 ```bash
-/usr/bin/rclone mount "$My_rclone_dpbx_label": /home/<USER>/Dropbox-V \
+# Example placeholders — customize
+MY_REMOTE="dropbox"
+MY_MOUNTPOINT="/media/Dropbox"
+MY_LOG="$HOME/.local/share/rclone/dropbox-mount.log"
+
+sudo mkdir -p "$MY_MOUNTPOINT"
+sudo chown "$USER:$USER" "$MY_MOUNTPOINT"
+sudo chmod 755 "$MY_MOUNTPOINT"
+
+/usr/bin/rclone mount "$MY_REMOTE":/ "$MY_MOUNTPOINT" \
   --vfs-cache-mode=full \
   --vfs-cache-max-size=2G \
   --vfs-read-chunk-size=32M \
@@ -270,27 +292,40 @@ Example (replace `<USER>` or use `$HOME`):
   --low-level-retries=10 \
   --umask=022 \
   --allow-other \
-  --log-file=/home/<USER>/.local/share/rclone/dropbox-mount.log \
+  --log-file="$MY_LOG" \
   --log-level=INFO
 ```
 
-### 7.1 Why these options matter
+### 7.2 Why these options matter
 
-* `--vfs-cache-mode=full` → POSIX‑like behavior (editors/IDEs, save‑in‑place)
+* `--vfs-cache-mode=full` → POSIX-like behavior (editors/IDEs, save-in-place)
 * Chunk + buffer tuning → avoids Dropbox API stalls
 * `--dir-cache-time=1h` → balances freshness vs API limits
-* `--poll-interval=30s` → Dropbox‑safe polling cadence
-* Retries → resilience to Wi‑Fi/network drops
+* `--poll-interval=30s` → Dropbox-safe polling cadence
+* Retries → resilience to Wi-Fi/network drops
 
 If this command fails, check:
 
 * Does the log directory exist? `mkdir -p ~/.local/share/rclone`
 * Is `user_allow_other` enabled in `/etc/fuse.conf`?
 * Wrong rclone remote (personal vs Business)?
+* Did you mount `REMOTE:/` (root) and not just `REMOTE:`?
 
 ---
 
 ## 8. systemd user service (canonical)
+
+### 8.0 Create the /media mountpoint (one-time)
+
+Because you want the mount under **/media** (not $HOME), create the mountpoint once and make it owned by your user:
+
+```bash
+sudo mkdir -p /media/Dpbx-V
+sudo chown $USER:$USER /media/Dpbx-V
+sudo chmod 755 /media/Dpbx-V
+```
+
+> The systemd **user** service should not be responsible for creating/chowning directories under /media.
 
 ### 8.1 Service name (fixed) vs remote label (variable)
 
@@ -307,24 +342,25 @@ Create:
 
 `~/.config/systemd/user/dropbox-rclone.service`
 
+> Replace `MY_REMOTE` and the mountpoint with your environment’s values.
+
 ```ini
 [Unit]
-Description=Rclone mount for Dropbox (user scoped, rclone label = $My_rclone_dpbx_label)
-
-# Start after the user session is up; network wait is handled in ExecStartPre
+Description=Rclone mount for Dropbox (user scoped)
 After=default.target
 
 [Service]
 Type=notify
 
-# Wait up to 30s for NetworkManager to report online; fall back to retries if not
-ExecStartPre=/usr/bin/nm-online -x -q -t 30
+# Optional: wait up to 30s for NetworkManager connectivity if nm-online exists
+ExecStartPre=/usr/bin/bash -lc 'command -v nm-online >/dev/null 2>&1 && nm-online -x -q -t 30 || true'
 
 # Ensure the mount directory and log directory exist
-ExecStartPre=/usr/bin/mkdir -p %h/Dropbox-V
+ExecStartPre=/usr/bin/mkdir -p /media/Dropbox
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/rclone
 
-ExecStart=/usr/bin/rclone mount $My_rclone_dpbx_label:/ %h/Dropbox-V \
+# IMPORTANT: mount REMOTE:/ (root) so Team folders appear at the mount root
+ExecStart=/usr/bin/rclone mount MY_REMOTE:/ /media/Dropbox \
   --vfs-cache-mode=full \
   --vfs-cache-max-size=2G \
   --vfs-read-chunk-size=32M \
@@ -374,17 +410,14 @@ This is expected and correct.
 
 ---
 
-## 10. Boot behavior (advanced)
+## 10. Boot behavior (important)
 
-By default, user services start when the user session starts.
+This setup is intentionally **NOT** available before login.
 
-If you want the mount available before GUI login:
+* It is a **systemd user** service.
+* It starts when the user session starts (GUI login), which is the intended workstation behavior.
 
-```bash
-loginctl enable-linger <USER>
-```
-
-This allows user units to start at boot without an active GUI session.
+**Do NOT enable “linger”** for this use case.
 
 ---
 
@@ -428,25 +461,30 @@ If any check fails, the script must:
 * Print a clear error message:
 
   * `"rclone and/or FUSE are not installed. Please install rclone, fuse3, and configure your Dropbox remote manually (rclone config) before re-running this script."`
-* Exit with a non‑zero status.
+* Exit with a non-zero status.
 
 2. Check environment / defaults
 
-* If `My_Dropbox_Folder` is not set, default to `$HOME/Dropbox-V` and print a notice.
-* If `My_rclone_dpbx_label` is not set, default to `dropbox` and print a notice.
+* If mountpoint is not set, default to `/media/Dropbox` and print a notice.
+* If remote label is not set, default to `dropbox` and print a notice.
 * Echo the effective values.
 
 3. Create directories
 
-* `mkdir -p "$My_Dropbox_Folder"`
-* `mkdir -p "$HOME/.local/share/rclone"` (avoids the log‑dir error)
-* `mkdir -p "$HOME/.config/systemd/user"`
+* Create the log dir: `mkdir -p "$HOME/.local/share/rclone"`
+* Create the systemd user dir: `mkdir -p "$HOME/.config/systemd/user"`
+* Ensure mountpoint exists and is usable (admin step):
+
+  * `sudo mkdir -p "$MOUNTPOINT"`
+  * `sudo chown "$USER:$USER" "$MOUNTPOINT"`
+  * `sudo chmod 755 "$MOUNTPOINT"`
 
 4. Generate the systemd user unit
 
 * Path: `~/.config/systemd/user/dropbox-rclone.service`
 * Use the rclone options from section 8.
-* Use `$My_rclone_dpbx_label` for the remote and `$My_Dropbox_Folder` for the mount directory.
+* **Mount `REMOTE:/` (root)** to ensure Team folders are at the mount root.
+* Mount to `/media/...` (volume-like) rather than a personal documents folder.
 
 5. Reload and enable the unit
 
@@ -460,22 +498,15 @@ It must not:
 * Install rclone itself.
 * Run `rclone config` or create the Dropbox remote.
 * Modify `/etc/fuse.conf`.
-
-Those operations are explicitly left to the administrator, following sections 4, 5 and 6.
-
-This ensures:
-
-* Credentials and OAuth flows remain under human control.
-* System‑wide FUSE policy changes are not made silently.
-* The script is safe to run on production workstations.
+* Enable linger (must **not** make it start before login).
 
 ---
 
-## Status: VERIFIED – production‑safe (with above patches)
+## Status: VERIFIED – production-safe (with above patches)
 
 Admin action required:
 
-* Always review and customize `My_Dropbox_Folder` and `My_rclone_dpbx_label`.
+* Always review and customize mountpoint and remote label.
 * Ensure `/etc/fuse.conf` contains `user_allow_other` when using `--allow-other`.
 * For Dropbox Business, ensure all machines share a consistent rclone remote configuration if they must see the same Team/Business root.
 
@@ -483,6 +514,6 @@ Admin action required:
 
 ## Cinnamon/Nemo usability notes (recommended)
 
-* Create the mount folder under `$HOME` so Nemo sees it.
+* `/media/Dropbox` is easy to bookmark in Nemo and feels “volume-like”.
 * Add a bookmark in Nemo for quick access.
-* If you want the mount visible under “Devices”, that is a separate udisks/desktop integration topic; do not mix it into this mount spec.
+* If you want it visible under “Devices”, that is a separate udisks/desktop integration topic; do not mix it into this mount spec.
