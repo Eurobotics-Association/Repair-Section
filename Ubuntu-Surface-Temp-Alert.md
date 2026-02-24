@@ -106,143 +106,230 @@ The timer runs the check periodically (default: every 30 seconds).
 
 > This installs the script + systemd service + timer. Safe and reversible.
 
-```bash
-bash -lc 'set -euo pipefail
-
-sudo -v
-sudo apt update
-sudo apt install -y lm-sensors libnotify-bin
-
-# 1) Script
-sudo tee /usr/local/sbin/surf7-temp-alert >/dev/null <<"SH"
+```sudo tee /usr/local/sbin/surf7-temp-alert > /dev/null << 'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-THRESHOLD="${THRESHOLD:-90}"            # °C
-COOLDOWN_SECONDS="${COOLDOWN_SECONDS:-180}"
-STATE_FILE="/run/surf7-temp-alert.last"
+# ===============================
+# Surface Pro 7 Temperature Alert
+# Ubuntu – Inform Only
+# No throttling. No management.
+# Alerts always when >= WARN, with a simple re-alert interval.
+# ===============================
 
-log(){ logger -t surf7-temp-alert "$*" || true; }
+# ---- CONFIG ----
+WARN_C=85
+CRIT_C=95
+
+# Re-alert interval when still above WARN/CRIT (seconds)
+RE_ALERT_WARN_SEC=120
+RE_ALERT_CRIT_SEC=60
+
+LOG_TAG="surf7-temp-alert"
+STATE_DIR="/run/surf7-temp-alert"
+STATE_FILE="$STATE_DIR/last_notify_epoch"
+# ----------------
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+mkdir -p "$STATE_DIR"
+log(){ logger -t "$LOG_TAG" -- "$*" || true; }
 
 now_epoch(){ date +%s; }
 
-cooldown_ok(){
-  local now last
-  now="$(now_epoch)"
-  last="0"
-  [[ -f "$STATE_FILE" ]] && last="$(cat "$STATE_FILE" 2>/dev/null || echo 0)"
-  # ok if enough time elapsed
-  (( now - last >= COOLDOWN_SECONDS ))
+read_milli_c_to_c() {
+  # arg: sysfs file containing millidegrees C
+  local f="$1"
+  [[ -r "$f" ]] || return 1
+  local v
+  v="$(cat "$f" 2>/dev/null || true)"
+  [[ "$v" =~ ^[0-9]+$ ]] || return 1
+  echo $(( v / 1000 ))
 }
 
-set_cooldown(){
-  now_epoch > "$STATE_FILE" 2>/dev/null || true
-}
-
-# Return temperature in millidegrees C if possible
-read_pkg_temp_millic(){
-  # Preferred: thermal zone type x86_pkg_temp
-  local z typefile tempfile
-  for z in /sys/class/thermal/thermal_zone*; do
-    typefile="$z/type"; tempfile="$z/temp"
-    [[ -r "$typefile" && -r "$tempfile" ]] || continue
-    if [[ "$(cat "$typefile" 2>/dev/null || true)" == "x86_pkg_temp" ]]; then
-      cat "$tempfile" 2>/dev/null || true
-      return 0
+# Find CPU package temp from coretemp hwmon (temp1_input is typically "Package id 0")
+get_cpu_pkg_c() {
+  local h
+  for h in /sys/class/hwmon/hwmon*; do
+    [[ -r "$h/name" ]] || continue
+    [[ "$(cat "$h/name" 2>/dev/null || true)" == "coretemp" ]] || continue
+    # Prefer temp1_input (package). If not, take max of temps.
+    if [[ -r "$h/temp1_input" ]]; then
+      read_milli_c_to_c "$h/temp1_input" && return 0
     fi
+    local best=""
+    local f
+    for f in "$h"/temp*_input; do
+      [[ -r "$f" ]] || continue
+      local c
+      c="$(read_milli_c_to_c "$f" || true)"
+      [[ -n "${c:-}" ]] || continue
+      if [[ -z "$best" || "$c" -gt "$best" ]]; then best="$c"; fi
+    done
+    [[ -n "${best:-}" ]] && echo "$best" && return 0
   done
-
-  # Fallback: sensors parse Package id 0
-  # sensors returns something like: "Package id 0:  +72.0°C"
-  if command -v sensors >/dev/null 2>&1; then
-    LC_ALL=C sensors 2>/dev/null | awk '/^Package id 0:/ {gsub(/[^0-9.]/,"",$4); if($4!="") printf("%d\n", $4*1000); exit}' || true
-    return 0
-  fi
-
   return 1
 }
 
-millic="$(read_pkg_temp_millic || true)"
-if [[ -z "$millic" ]]; then
-  echo "surf7-temp-alert: could not read package temperature" >&2
-  log "could not read package temperature"
+# Try Intel iGPU temp (i915). Often exposed at /sys/class/drm/card0/device/hwmon/hwmon*/temp1_input
+get_gpu_c() {
+  local h
+  for h in /sys/class/drm/card*/device/hwmon/hwmon*; do
+    [[ -r "$h/name" ]] || continue
+    # commonly "i915"
+    local n
+    n="$(cat "$h/name" 2>/dev/null || true)"
+    [[ "$n" == "i915" || "$n" == "intel_gpu" ]] || continue
+    [[ -r "$h/temp1_input" ]] || continue
+    read_milli_c_to_c "$h/temp1_input" && return 0
+  done
+  return 1
+}
+
+get_nvme_c() {
+  local h
+  for h in /sys/class/hwmon/hwmon*; do
+    [[ -r "$h/name" ]] || continue
+    [[ "$(cat "$h/name" 2>/dev/null || true)" == "nvme" ]] || continue
+    # Usually temp1_input exists; else take max
+    if [[ -r "$h/temp1_input" ]]; then
+      read_milli_c_to_c "$h/temp1_input" && return 0
+    fi
+    local best=""
+    local f
+    for f in "$h"/temp*_input; do
+      [[ -r "$f" ]] || continue
+      local c
+      c="$(read_milli_c_to_c "$f" || true)"
+      [[ -n "${c:-}" ]] || continue
+      if [[ -z "$best" || "$c" -gt "$best" ]]; then best="$c"; fi
+    done
+    [[ -n "${best:-}" ]] && echo "$best" && return 0
+  done
+  return 1
+}
+
+# Return: "max_temp sources"
+# sources example: "cpu=71 gpu=68 nvme=38"
+get_max_temp_and_sources() {
+  local cpu="" gpu="" nvme=""
+  cpu="$(get_cpu_pkg_c || true)"
+  gpu="$(get_gpu_c || true)"
+  nvme="$(get_nvme_c || true)"
+
+  local max="" src=""
+  if [[ -n "$cpu" ]]; then max="$cpu"; src+=" cpu=$cpu"; fi
+  if [[ -n "$gpu" ]]; then
+    if [[ -z "$max" || "$gpu" -gt "$max" ]]; then max="$gpu"; fi
+    src+=" gpu=$gpu"
+  fi
+  if [[ -n "$nvme" ]]; then
+    if [[ -z "$max" || "$nvme" -gt "$max" ]]; then max="$nvme"; fi
+    src+=" nvme=$nvme"
+  fi
+
+  src="${src# }"
+  [[ -n "${max:-}" ]] || return 1
+  echo "$max" "$src"
+}
+
+# Find active GUI session user (seat0, Active=yes, Type=x11|wayland)
+get_active_gui_user() {
+  local sid
+  while read -r sid _rest; do
+    [[ -n "$sid" ]] || continue
+    local active type name clazz
+    active="$(loginctl show-session "$sid" -p Active --value 2>/dev/null || true)"
+    type="$(loginctl show-session "$sid" -p Type --value 2>/dev/null || true)"
+    clazz="$(loginctl show-session "$sid" -p Class --value 2>/dev/null || true)"
+    name="$(loginctl show-session "$sid" -p Name --value 2>/dev/null || true)"
+    if [[ "$active" == "yes" && ( "$type" == "wayland" || "$type" == "x11" ) && "$clazz" == "user" && -n "$name" ]]; then
+      echo "$name"
+      return 0
+    fi
+  done < <(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}')
+  return 1
+}
+
+notify_gui() {
+  local title="$1"; shift
+  local msg="$*"
+
+  command -v notify-send >/dev/null 2>&1 || { log "notify-send missing"; return 0; }
+
+  local user uid runtime bus
+  user="$(get_active_gui_user || true)"
+  [[ -n "${user:-}" ]] || { log "No active GUI session found"; return 0; }
+
+  uid="$(id -u "$user" 2>/dev/null || true)"
+  [[ -n "${uid:-}" ]] || { log "Could not get UID for user=$user"; return 0; }
+
+  runtime="/run/user/$uid"
+  bus="$runtime/bus"
+  [[ -S "$bus" ]] || { log "No session bus socket at $bus (user=$user)"; return 0; }
+
+  # Best-effort DISPLAY/WAYLAND defaults (DBus is usually enough, but harmless)
+  sudo -u "$user" env \
+    XDG_RUNTIME_DIR="$runtime" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+    DISPLAY=:0 \
+    WAYLAND_DISPLAY=wayland-0 \
+    notify-send -u critical "$title" "$msg" >/dev/null 2>&1 \
+    || log "notify-send failed (user=$user, uid=$uid)"
+}
+
+should_notify_now() {
+  local level="$1"  # WARN or CRIT
+  local interval="$2"
+
+  local last="0"
+  last="$(cat "$STATE_FILE" 2>/dev/null || echo "0")"
+  [[ "$last" =~ ^[0-9]+$ ]] || last="0"
+
+  local now
+  now="$(now_epoch)"
+
+  if (( now - last >= interval )); then
+    echo "$now" > "$STATE_FILE"
+    return 0
+  fi
+  return 1
+}
+
+# ---- MAIN ----
+read -r temp sources < <(get_max_temp_and_sources) || {
+  log "Temperature read failed (no sysfs hwmon sources found)."
+  exit 0
+}
+
+log "TempMax=${temp}C (warn=${WARN_C}C crit=${CRIT_C}C) sources: ${sources}"
+
+if (( temp >= CRIT_C )); then
+  local_msg="CRITICAL: ${temp}°C (>= ${CRIT_C}°C). Stop heavy tasks immediately. (${sources})"
+  log "$local_msg"
+  if should_notify_now "CRIT" "$RE_ALERT_CRIT_SEC"; then
+    # wall is best-effort; may be blocked by mesg n
+    wall -n "$LOG_TAG: $local_msg" 2>/dev/null || true
+    notify_gui "Surface Pro 7 Temperature – CRITICAL" "$local_msg"
+  fi
   exit 0
 fi
 
-# Convert to integer °C
-c=$(( millic / 1000 ))
-
-if (( c >= THRESHOLD )); then
-  if cooldown_ok; then
-    msg="SURFACE7 TEMP WARNING: package ${c}°C (threshold ${THRESHOLD}°C)"
-    echo "$msg"
-    log "$msg"
-
-    # Terminal broadcast (optional; depends on wall permissions)
-    wall "$msg" 2>/dev/null || true
-
-    # GNOME notification (Wayland OK when systemd user session exists; we run as root but call notify-send as active user)
-    # Find active seat0 user
-    active_user=""
-    active_user="$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3=="seat0" && $5=="yes" {print $2; exit}')"
-    if [[ -n "$active_user" ]]; then
-      uid="$(id -u "$active_user" 2>/dev/null || echo "")"
-      if [[ -n "$uid" && -S "/run/user/$uid/bus" ]]; then
-        # Run notify-send in the user context with DBUS
-        runuser -u "$active_user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
-          notify-send -u critical "Surface Pro 7 temperature" "$msg" 2>/dev/null || true
-      fi
-    fi
-
-    set_cooldown
+if (( temp >= WARN_C )); then
+  local_msg="WARNING: ${temp}°C (>= ${WARN_C}°C). Consider stopping heavy tasks. (${sources})"
+  log "$local_msg"
+  if should_notify_now "WARN" "$RE_ALERT_WARN_SEC"; then
+    wall -n "$LOG_TAG: $local_msg" 2>/dev/null || true
+    notify_gui "Surface Pro 7 Temperature – WARNING" "$local_msg"
   fi
 fi
-SH
+
+exit 0
+EOF
+
 sudo chmod 0755 /usr/local/sbin/surf7-temp-alert
-
-# 2) Default config
-sudo tee /etc/default/surf7-temp-alert >/dev/null <<"CFG"
-# Threshold in °C
-THRESHOLD=90
-
-# Cooldown between notifications (seconds)
-COOLDOWN_SECONDS=180
-CFG
-sudo chmod 0644 /etc/default/surf7-temp-alert
-
-# 3) systemd service
-sudo tee /etc/systemd/system/surf7-temp-alert.service >/dev/null <<"UNIT"
-[Unit]
-Description=Surface Pro 7 Temperature Alert (warning only)
-
-[Service]
-Type=oneshot
-EnvironmentFile=-/etc/default/surf7-temp-alert
-ExecStart=/usr/local/sbin/surf7-temp-alert
-UNIT
-sudo chmod 0644 /etc/systemd/system/surf7-temp-alert.service
-
-# 4) systemd timer
-sudo tee /etc/systemd/system/surf7-temp-alert.timer >/dev/null <<"TIMER"
-[Unit]
-Description=Run Surface Pro 7 Temperature Alert periodically
-
-[Timer]
-OnBootSec=45s
-OnUnitActiveSec=30s
-AccuracySec=5s
-Unit=surf7-temp-alert.service
-
-[Install]
-WantedBy=timers.target
-TIMER
-sudo chmod 0644 /etc/systemd/system/surf7-temp-alert.timer
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now surf7-temp-alert.timer
-
-echo "Installed. Check status with: systemctl status surf7-temp-alert.timer"
-'
+sudo systemctl restart surf7-temp-alert.timer
+sudo systemctl start surf7-temp-alert.service
 ```
 
 ---
