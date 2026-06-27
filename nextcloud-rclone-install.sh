@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nextcloud rclone mount installer for Ubuntu 24.04
 # Eurobotics 2026 - GNU
-# v.20260421.0001
+# v.20260627.0001
 
 set -euo pipefail
 
@@ -139,12 +139,14 @@ prepare_directories() {
     TECH_ROOT="/mnt/$TARGET_USER"
     TECH_PATH="$TECH_ROOT/nextcloud"
     USER_SYSTEMD_DIR="$TARGET_HOME/.config/systemd/user"
+    RCLONE_CONFIG_DIR="$TARGET_HOME/.config/rclone"
+    EXCLUDES_FILE="$RCLONE_CONFIG_DIR/nextcloud-excludes.txt"
     CACHE_DIR="$TARGET_HOME/.local/share/rclone/cache"
 
     log_info "Creating mount and service directories..."
 
-    mkdir -p "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT" "$USER_SYSTEMD_DIR" "$CACHE_DIR"
-    chown "$TARGET_UID:$TARGET_GID" "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT" "$USER_SYSTEMD_DIR" "$CACHE_DIR"
+    mkdir -p "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT" "$USER_SYSTEMD_DIR" "$RCLONE_CONFIG_DIR" "$CACHE_DIR"
+    chown "$TARGET_UID:$TARGET_GID" "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT" "$USER_SYSTEMD_DIR" "$RCLONE_CONFIG_DIR" "$CACHE_DIR"
     chmod 755 "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT"
 
     if [[ -L "$TECH_PATH" || -e "$TECH_PATH" ]]; then
@@ -168,6 +170,36 @@ prepare_directories() {
     chown -h "$TARGET_UID:$TARGET_GID" "$TECH_PATH" 2>/dev/null || true
 
     log_success "Directories prepared."
+}
+
+write_rclone_excludes() {
+    log_info "Writing homelab Nextcloud rclone exclude policy to $EXCLUDES_FILE ..."
+
+    cat > "$EXCLUDES_FILE" <<'EOF'
+# Nextcloud / WebDAV reserved or desktop-generated files.
+# Reuse with: --exclude-from ~/.config/rclone/nextcloud-excludes.txt
+**/.htaccess
+**/.htpasswd
+**/.user.ini
+
+# macOS metadata.
+**/.DS_Store
+**/.Spotlight-V100/**
+**/.TemporaryItems/**
+
+# Windows metadata and recycle bin folders.
+**/Thumbs.db
+**/desktop.ini
+**/$RECYCLE.BIN/**
+
+# Linux / desktop trash folders.
+**/.Trash-*/
+EOF
+
+    chown "$TARGET_UID:$TARGET_GID" "$EXCLUDES_FILE"
+    chmod 644 "$EXCLUDES_FILE"
+
+    log_success "rclone exclude policy written."
 }
 
 write_service_unit() {
@@ -194,6 +226,7 @@ ExecStart=/usr/bin/rclone mount nextcloud:/ /media/%u/nextcloud \
   --vfs-cache-max-age 24h \
   --vfs-cache-max-size 10G \
   --cache-dir %h/.local/share/rclone/cache \
+  --exclude-from %h/.config/rclone/nextcloud-excludes.txt \
   --log-level INFO
 Restart=on-failure
 RestartSec=20
@@ -268,6 +301,7 @@ User home        : $TARGET_HOME
 Mount path       : $MOUNT_DIR
 Technical path   : $TECH_PATH
 Service file     : $SERVICE_FILE
+Exclude policy   : $EXCLUDES_FILE
 Log file         : $LOGFILE
 
 Next step for the target user:
@@ -285,6 +319,9 @@ Recommended:
 
 Validate remote:
   sudo -u $TARGET_USER -H bash -lc 'rclone lsd nextcloud:/'
+
+Reuse the homelab exclude policy in future rclone commands:
+  sudo -u $TARGET_USER -H bash -lc 'rclone copy <source> nextcloud:<path> --exclude-from ~/.config/rclone/nextcloud-excludes.txt'
 
 Start or restart mount:
   sudo -u $TARGET_USER -H bash -lc 'systemctl --user restart nextcloud-rclone.service'
@@ -317,6 +354,7 @@ main() {
     [[ "$proceed" =~ ^[Yy]$ ]] || log_error "Installation cancelled by user."
 
     prepare_directories
+    write_rclone_excludes
     write_service_unit
     ensure_linger
     check_remote_exists

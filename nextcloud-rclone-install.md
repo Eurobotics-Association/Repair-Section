@@ -9,6 +9,7 @@ This design follows the same operational spirit as the validated Dropbox Busines
 * Access Nextcloud through `rclone mount`
 * Make the mount visible in Linux file managers
 * Run the mount reliably through a **systemd user service**
+* Create a standard homelab rclone exclude policy for Nextcloud-backed storage
 * Install with a root-run installer that prepares the target user environment
 * Keep the setup suitable for production desktops and user laptops
 
@@ -92,6 +93,14 @@ sudo sed -i 's/^# *user_allow_other/user_allow_other/' /etc/fuse.conf
 
 # 4) Nextcloud rclone remote
 
+The standard homelab rclone layout is:
+
+```text
+~/.config/rclone/
+    rclone.conf
+    nextcloud-excludes.txt
+```
+
 Create a remote with:
 
 ```bash
@@ -120,6 +129,48 @@ rclone lsd nextcloud:/
 ```
 
 You should see top-level folders accessible for that user.
+
+## 4.1 Standard Nextcloud exclude policy
+
+The installer creates:
+
+```text
+~/.config/rclone/nextcloud-excludes.txt
+```
+
+Recommended content:
+
+```text
+# Nextcloud / WebDAV reserved or desktop-generated files.
+# Reuse with: --exclude-from ~/.config/rclone/nextcloud-excludes.txt
+**/.htaccess
+**/.htpasswd
+**/.user.ini
+
+# macOS metadata.
+**/.DS_Store
+**/.Spotlight-V100/**
+**/.TemporaryItems/**
+
+# Windows metadata and recycle bin folders.
+**/Thumbs.db
+**/desktop.ini
+**/$RECYCLE.BIN/**
+
+# Linux / desktop trash folders.
+**/.Trash-*/
+```
+
+Every rclone command that writes into Nextcloud-backed storage should reuse the same filter:
+
+```bash
+rclone copy <source> nextcloud:<path> --exclude-from ~/.config/rclone/nextcloud-excludes.txt
+rclone sync <source> nextcloud:<path> --exclude-from ~/.config/rclone/nextcloud-excludes.txt
+rclone bisync <source> nextcloud:<path> --exclude-from ~/.config/rclone/nextcloud-excludes.txt
+rclone check <source> nextcloud:<path> --exclude-from ~/.config/rclone/nextcloud-excludes.txt
+```
+
+This keeps Linux desktops, laptops, and homelab servers aligned and avoids repeating fragile per-command exclusions.
 
 ---
 
@@ -172,6 +223,7 @@ ExecStart=/usr/bin/rclone mount nextcloud:/ /media/%u/nextcloud \
   --vfs-cache-max-age 24h \
   --vfs-cache-max-size 10G \
   --cache-dir %h/.local/share/rclone/cache \
+  --exclude-from %h/.config/rclone/nextcloud-excludes.txt \
   --log-level INFO
 Restart=on-failure
 RestartSec=20
@@ -188,6 +240,7 @@ WantedBy=default.target
 * `--poll-interval 30s` → periodic refresh
 * `--vfs-cache-mode writes` → safer writes than no VFS cache
 * `--vfs-cache-max-age 24h` and `--vfs-cache-max-size 10G` → bounded cache
+* `--exclude-from %h/.config/rclone/nextcloud-excludes.txt` → standard homelab policy for files that should not enter Nextcloud storage
 * `Restart=on-failure` → resilience after temporary network issues
 * `ExecStop` unmount → avoids stale FUSE endpoints on stop/restart
 
@@ -236,9 +289,10 @@ The installation script should:
 5. Allow override if the detected user is wrong
 6. Refuse obviously invalid targets such as `root`
 7. Create all required directories with correct ownership
-8. Create the systemd user unit under the target user home
-9. Trigger the user-level daemon reload and service enable/start
-10. Print clear post-install instructions for `rclone config`
+8. Create `~/.config/rclone/nextcloud-excludes.txt`
+9. Create the systemd user unit under the target user home
+10. Trigger the user-level daemon reload and service enable/start
+11. Print clear post-install instructions for `rclone config`
 
 Important note:
 
@@ -259,11 +313,12 @@ Important note:
 3. Install packages
 4. Prepare FUSE config
 5. Create mount directories
-6. Create user service
-7. In the target user session, run `rclone config`
-8. Validate remote with `rclone lsd nextcloud:/`
-9. Start / restart the service
-10. Validate file manager visibility
+6. Create the standard rclone exclude file
+7. Create user service
+8. In the target user session, run `rclone config`
+9. Validate remote with `rclone lsd nextcloud:/`
+10. Start / restart the service
+11. Validate file manager visibility
 
 ## Later operations
 
@@ -330,6 +385,49 @@ https://<host>/remote.php/dav/files/<username>/
 ```
 
 Do not use a generic server root URL when the per-user path is required.
+
+## 11.5 Surface Pro 7 / laptop-specific investigation
+
+The Surface 7 may behave differently from servers or fixed desktops because of Wi-Fi power management, suspend/resume behavior, FUSE state, kernel flavor, and large interactive file-manager directory scans.
+
+First confirm the exact command that feels slow. Capture the command type and full command line with credentials redacted:
+
+```bash
+rclone sync ...
+rclone bisync ...
+rclone mount ...
+rclone copy ...
+rclone check ...
+```
+
+Then run a small timing baseline:
+
+```bash
+time rclone lsd nextcloud:/
+time rclone lsjson nextcloud:/ --max-depth 1 --fast-list
+time rclone about nextcloud:
+```
+
+If a write operation is slow, compare a tiny file and a directory traversal:
+
+```bash
+tmpfile="$(mktemp)"
+printf 'nextcloud-rclone-test\n' > "$tmpfile"
+time rclone copy "$tmpfile" nextcloud:/rclone-test/ --exclude-from ~/.config/rclone/nextcloud-excludes.txt -vv
+time rclone check "$tmpfile" nextcloud:/rclone-test/ --exclude-from ~/.config/rclone/nextcloud-excludes.txt -vv
+rm -f "$tmpfile"
+```
+
+If `rclone mount` is the slow part, check whether the delay is mount startup, first directory listing, or GNOME Files scanning:
+
+```bash
+time systemctl --user restart nextcloud-rclone.service
+systemctl --user status nextcloud-rclone.service --no-pager
+journalctl --user -u nextcloud-rclone.service -n 200 --no-pager
+time ls -la /media/$USER/nextcloud | head
+```
+
+The key diagnostic question is whether slowness appears only with a large tree, only through the mounted filesystem, or also with direct `rclone` WebDAV commands. A fast simple WebDAV test, such as a sub-second command, usually means the delay is caused by traversal, cache warm-up, file-manager probing, or command options rather than basic Nextcloud connectivity.
 
 ---
 
