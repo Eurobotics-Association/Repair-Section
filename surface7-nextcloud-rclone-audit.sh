@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Audit and activate the standard Nextcloud rclone exclude policy on a laptop.
+# Audit and repair the standard Nextcloud rclone exclude policy on a laptop.
 # Designed for Robert's Surface Pro 7 Ubuntu setup.
-# v.20260627.0001
+# v.20260627.0003
 
 set -euo pipefail
 
@@ -23,17 +23,22 @@ usage() {
     cat <<EOF
 Usage: $0 [--yes] [--audit-only]
 
+Purpose:
+  Audit and repair the Surface 7 Nextcloud rclone mount only.
+  Dropbox and other rclone mounts are deliberately out of scope.
+
 Checks:
   - rclone binary location, version, and likely install source
   - rclone config and nextcloud remote presence
   - ~/.config/rclone/nextcloud-excludes.txt presence/content
-  - active mounts mentioning rclone or nextcloud
-  - user systemd services containing rclone
-  - whether rclone mount services already use --exclude-from
+  - active mounts mentioning nextcloud
+  - user systemd services containing nextcloud
+  - whether Nextcloud rclone mount services already use --exclude-from
 
 Actions:
   - with confirmation, creates ~/.config/rclone/nextcloud-excludes.txt
-  - with confirmation, patches writable direct user rclone mount units
+  - with confirmation, patches writable direct user Nextcloud rclone mount units
+  - never patches Dropbox or other non-Nextcloud rclone services
 
 Options:
   --yes        accept safe remediation prompts
@@ -187,14 +192,14 @@ audit_excludes_file() {
     fi
 }
 
-audit_mounts() {
+audit_nextcloud_mounts() {
     echo
-    log_info "Checking current mounts..."
+    log_info "Checking current Nextcloud mounts..."
 
-    if mount | grep -Ei 'rclone|nextcloud' >/dev/null 2>&1; then
-        mount | grep -Ei 'rclone|nextcloud'
+    if mount | grep -Ei 'nextcloud' >/dev/null 2>&1; then
+        mount | grep -Ei 'nextcloud'
     else
-        log_warn "No active mount line mentions rclone or nextcloud."
+        log_warn "No active mount line mentions nextcloud."
     fi
 }
 
@@ -217,6 +222,12 @@ patch_direct_unit() {
     local backup="$unit.bak.$(date +%Y%m%d-%H%M%S)"
     local tmp
     tmp="$(mktemp)"
+
+    if ! grep -Eq 'rclone[[:space:]]+mount[[:space:]]+nextcloud:' "$unit"; then
+        rm -f "$tmp"
+        log_warn "Refusing to patch non-Nextcloud unit: $unit"
+        return 1
+    fi
 
     cp -p "$unit" "$backup"
 
@@ -289,9 +300,9 @@ patch_direct_unit() {
     echo "Backup: $backup"
 }
 
-audit_user_services() {
+audit_nextcloud_user_services() {
     echo
-    log_info "Checking systemd user services that mention rclone..."
+    log_info "Checking systemd user services that mention Nextcloud..."
 
     local service_dirs=(
         "$HOME/.config/systemd/user"
@@ -305,14 +316,14 @@ audit_user_services() {
     for dir in "${service_dirs[@]}"; do
         [[ -d "$dir" ]] || continue
         while IFS= read -r -d '' unit; do
-            if grep -Iq . "$unit" && grep -Eq 'rclone|nextcloud' "$unit"; then
+            if grep -Iq . "$unit" && grep -Eiq 'nextcloud' "$unit"; then
                 units+=("$unit")
             fi
         done < <(find "$dir" -maxdepth 1 -type f -name '*.service' -print0 2>/dev/null)
     done
 
     if [[ ${#units[@]} -eq 0 ]]; then
-        log_warn "No user service files mentioning rclone or nextcloud were found in common locations."
+        log_warn "No user service files mentioning Nextcloud were found in common locations."
     fi
 
     local unit execs script
@@ -321,18 +332,18 @@ audit_user_services() {
         echo "Service file: $unit"
         normalize_unit_execstart "$unit" | sed 's/^/  /' || true
 
-        if grep -Eq 'rclone[[:space:]]+mount' "$unit"; then
+        if grep -Eq 'rclone[[:space:]]+mount[[:space:]]+nextcloud:' "$unit"; then
             if grep -Eq -- '--exclude-from[[:space:]]+.*nextcloud-excludes\.txt' "$unit"; then
-                log_success "This direct rclone mount service already uses the standard exclude file."
+                log_success "This direct Nextcloud rclone mount service already uses the standard exclude file."
             elif [[ "$unit" == "$HOME/.config/systemd/user/"* && -w "$unit" ]]; then
-                log_warn "This direct rclone mount service does not use --exclude-from."
+                log_warn "This direct Nextcloud rclone mount service does not use --exclude-from."
                 if [[ -f "$EXCLUDES_FILE" ]] && confirm "Patch this user service to add the standard exclude file?"; then
                     patch_direct_unit "$unit" || true
                     systemctl --user daemon-reload || log_warn "systemctl --user daemon-reload failed."
                     log_warn "Restart the service after reviewing the patch: systemctl --user restart $(basename "$unit")"
                 fi
             else
-                log_warn "This direct rclone mount service lacks --exclude-from but is not a writable user unit."
+                log_warn "This direct Nextcloud rclone mount service lacks --exclude-from but is not a writable user unit."
             fi
         else
             execs="$(normalize_unit_execstart "$unit" || true)"
@@ -344,15 +355,15 @@ audit_user_services() {
                     grep -nE 'rclone|exclude-from|nextcloud' "$script" || true
                 fi
             else
-                log_warn "This service mentions rclone/nextcloud but does not contain a direct rclone mount ExecStart."
+                log_warn "This service mentions Nextcloud but does not contain a direct Nextcloud rclone mount ExecStart."
             fi
         fi
     done
 
     echo
-    log_info "Active user services mentioning rclone or nextcloud:"
+    log_info "Active user services mentioning Nextcloud:"
     systemctl --user list-units --type=service --all --no-pager 2>/dev/null \
-        | grep -Ei 'rclone|nextcloud' || log_warn "No active/listed user service mentions rclone or nextcloud."
+        | grep -Ei 'nextcloud' || log_warn "No active/listed user service mentions Nextcloud."
 }
 
 print_next_steps() {
@@ -375,10 +386,10 @@ main() {
     audit_rclone_binary
     audit_rclone_config
     audit_excludes_file
-    audit_mounts
-    audit_user_services
+    audit_nextcloud_mounts
+    audit_nextcloud_user_services
     print_next_steps
-    log_success "Audit completed."
+    log_success "Nextcloud audit/repair completed."
 }
 
 main "$@"

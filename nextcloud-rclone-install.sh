@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Nextcloud rclone mount installer for Ubuntu 24.04
+# Scope: Nextcloud only. This script must not modify Dropbox or other rclone services.
 # Eurobotics 2026 - GNU
-# v.20260627.0001
+# v.20260627.0002
 
 set -euo pipefail
 
@@ -12,6 +13,9 @@ BLUE="\e[34m"
 NC="\e[0m"
 
 LOGFILE="/var/log/nextcloud-rclone-install.log"
+NEXTCLOUD_REMOTE="nextcloud"
+NEXTCLOUD_SERVICE="nextcloud-rclone.service"
+NEXTCLOUD_EXCLUDES_NAME="nextcloud-excludes.txt"
 mkdir -p "$(dirname "$LOGFILE")"
 exec > >(tee -a "$LOGFILE") 2>&1
 
@@ -140,7 +144,7 @@ prepare_directories() {
     TECH_PATH="$TECH_ROOT/nextcloud"
     USER_SYSTEMD_DIR="$TARGET_HOME/.config/systemd/user"
     RCLONE_CONFIG_DIR="$TARGET_HOME/.config/rclone"
-    EXCLUDES_FILE="$RCLONE_CONFIG_DIR/nextcloud-excludes.txt"
+    EXCLUDES_FILE="$RCLONE_CONFIG_DIR/$NEXTCLOUD_EXCLUDES_NAME"
     CACHE_DIR="$TARGET_HOME/.local/share/rclone/cache"
 
     log_info "Creating mount and service directories..."
@@ -203,7 +207,7 @@ EOF
 }
 
 write_service_unit() {
-    SERVICE_FILE="$USER_SYSTEMD_DIR/nextcloud-rclone.service"
+    SERVICE_FILE="$USER_SYSTEMD_DIR/$NEXTCLOUD_SERVICE"
 
     log_info "Writing systemd user service to $SERVICE_FILE ..."
 
@@ -218,7 +222,7 @@ Type=simple
 ExecStartPre=/usr/bin/bash -lc 'command -v nm-online >/dev/null 2>&1 && nm-online -q -t 30 || true'
 ExecStartPre=/usr/bin/mkdir -p /media/%u/nextcloud
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/rclone/cache
-ExecStart=/usr/bin/rclone mount nextcloud:/ /media/%u/nextcloud \
+ExecStart=/usr/bin/rclone mount ${NEXTCLOUD_REMOTE}:/ /media/%u/nextcloud \
   --allow-other \
   --dir-cache-time 72h \
   --poll-interval 30s \
@@ -226,7 +230,7 @@ ExecStart=/usr/bin/rclone mount nextcloud:/ /media/%u/nextcloud \
   --vfs-cache-max-age 24h \
   --vfs-cache-max-size 10G \
   --cache-dir %h/.local/share/rclone/cache \
-  --exclude-from %h/.config/rclone/nextcloud-excludes.txt \
+  --exclude-from %h/.config/rclone/${NEXTCLOUD_EXCLUDES_NAME} \
   --log-level INFO
 Restart=on-failure
 RestartSec=20
@@ -255,11 +259,11 @@ run_as_target_user() {
 }
 
 check_remote_exists() {
-    if run_as_target_user 'rclone listremotes 2>/dev/null | grep -qx "nextcloud:"'; then
-        log_success "rclone remote 'nextcloud' already exists for user '$TARGET_USER'."
+    if run_as_target_user "rclone listremotes 2>/dev/null | grep -qx '${NEXTCLOUD_REMOTE}:'"; then
+        log_success "rclone remote '$NEXTCLOUD_REMOTE' already exists for user '$TARGET_USER'."
         REMOTE_EXISTS=1
     else
-        log_warn "rclone remote 'nextcloud' is not yet configured for user '$TARGET_USER'."
+        log_warn "rclone remote '$NEXTCLOUD_REMOTE' is not yet configured for user '$TARGET_USER'."
         REMOTE_EXISTS=0
     fi
 }
@@ -273,14 +277,14 @@ enable_service_if_possible() {
         log_warn "Could not reload systemd user daemon automatically."
     fi
 
-    if run_as_target_user 'systemctl --user enable nextcloud-rclone.service'; then
+    if run_as_target_user "systemctl --user enable $NEXTCLOUD_SERVICE"; then
         log_success "User service enabled."
     else
         log_warn "Could not enable user service automatically."
     fi
 
     if [[ "$REMOTE_EXISTS" -eq 1 ]]; then
-        if run_as_target_user 'systemctl --user restart nextcloud-rclone.service'; then
+        if run_as_target_user "systemctl --user restart $NEXTCLOUD_SERVICE"; then
             log_success "User service started/restarted."
         else
             log_warn "Could not start the user service automatically."
@@ -309,7 +313,7 @@ Next step for the target user:
   sudo -u $TARGET_USER -H bash -lc 'rclone config'
 
 Create a remote with:
-  name    : nextcloud
+  name    : $NEXTCLOUD_REMOTE
   type    : webdav
   vendor  : nextcloud
   url     : https://<your-nextcloud-host>/remote.php/dav/files/<username>/

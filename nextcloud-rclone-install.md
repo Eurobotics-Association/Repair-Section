@@ -15,6 +15,8 @@ This design follows the same operational spirit as the validated Dropbox Busines
 
 This is **not** the Nextcloud desktop sync client. No full file replication is performed.
 
+This is also **not** a Dropbox repair procedure. Existing Dropbox rclone mounts must be left unchanged.
+
 ---
 
 # 1) Target behavior
@@ -389,6 +391,32 @@ Do not use a generic server root URL when the per-user path is required.
 ## 11.5 Surface Pro 7 / laptop-specific investigation
 
 The Surface 7 may behave differently from servers or fixed desktops because of Wi-Fi power management, suspend/resume behavior, FUSE state, kernel flavor, and large interactive file-manager directory scans.
+
+Known Surface Pro 7 Dropbox baseline, for reference only:
+
+```ini
+Service file: /home/rfv/.config/systemd/user/dropbox-rclone.service
+Mount path  : /media/Dpbx-V
+Remote      : dpbx:/
+
+ExecStart=/usr/bin/rclone mount dpbx:/ /media/Dpbx-V \
+  --vfs-cache-mode=full \
+  --vfs-cache-max-size=2G \
+  --vfs-read-chunk-size=32M \
+  --vfs-read-chunk-size-limit=512M \
+  --buffer-size=16M \
+  --dir-cache-time=1h \
+  --poll-interval=30s \
+  --timeout=1m \
+  --retries=5 \
+  --low-level-retries=10 \
+  --umask=022 \
+  --allow-other \
+  --log-file=%h/.local/share/rclone/dropbox-mount.log \
+  --log-level=INFO
+```
+
+This Dropbox service is not part of the Nextcloud issue. Do not add `nextcloud-excludes.txt` to it. The Nextcloud reserved-file problem applies to the Nextcloud/WebDAV path, especially files such as `.htaccess`, `.htpasswd`, and `.user.ini`.
 
 First confirm the exact command that feels slow. Capture the command type and full command line with credentials redacted:
 
