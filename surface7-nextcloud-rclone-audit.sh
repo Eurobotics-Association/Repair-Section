@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Audit and repair the standard Nextcloud rclone exclude policy on a laptop.
-# Designed for Robert's Surface Pro 7 Ubuntu setup.
-# v.20260627.0003
+# Designed for Ubuntu/ZorinOS family laptops; originally validated on Robert's Surface Pro 7.
+# v.20260627.0006
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ usage() {
 Usage: $0 [--yes] [--audit-only]
 
 Purpose:
-  Audit and repair the Surface 7 Nextcloud rclone mount only.
+  Audit and repair a laptop Nextcloud rclone mount only.
   Dropbox and other rclone mounts are deliberately out of scope.
 
 Checks:
@@ -33,11 +33,15 @@ Checks:
   - ~/.config/rclone/nextcloud-excludes.txt presence/content
   - active mounts mentioning nextcloud
   - user systemd services containing nextcloud
-  - whether Nextcloud rclone mount services already use --exclude-from
+  - whether Nextcloud rclone mount services use the standard hardening options
+    (--exclude-from, -o x-gvfs-hide, --daemon-timeout 20s, no unsupported WebDAV --poll-interval)
+  - stale forbidden files already queued in the Nextcloud rclone VFS cache
 
 Actions:
   - with confirmation, creates ~/.config/rclone/nextcloud-excludes.txt
   - with confirmation, patches writable direct user Nextcloud rclone mount units
+    to add the standard exclude and desktop/suspend hardening options
+  - with confirmation, removes stale .htaccess/.htpasswd/.user.ini entries from the Nextcloud VFS cache
   - never patches Dropbox or other non-Nextcloud rclone services
 
 Options:
@@ -72,6 +76,11 @@ fi
 
 RCLONE_CONFIG_DIR="$HOME/.config/rclone"
 EXCLUDES_FILE="$RCLONE_CONFIG_DIR/nextcloud-excludes.txt"
+NEXTCLOUD_SERVICE="nextcloud-rclone.service"
+NEXTCLOUD_CACHE_ROOTS=(
+    "$HOME/.local/share/rclone/cache/vfs/nextcloud"
+    "$HOME/.local/share/rclone/cache/vfsMeta/nextcloud"
+)
 
 confirm() {
     local prompt="$1"
@@ -111,6 +120,26 @@ write_excludes_file() {
 **/.Trash-*/
 EOF
     chmod 644 "$EXCLUDES_FILE"
+}
+
+find_stale_forbidden_cache_entries() {
+    local root
+    for root in "${NEXTCLOUD_CACHE_ROOTS[@]}"; do
+        [[ -d "$root" ]] || continue
+        find "$root" \( -name '.htaccess' -o -name '.htpasswd' -o -name '.user.ini' \) -print 2>/dev/null
+    done
+}
+
+delete_stale_forbidden_cache_entries() {
+    local root
+    for root in "${NEXTCLOUD_CACHE_ROOTS[@]}"; do
+        [[ -d "$root" ]] || continue
+        find "$root" \( -name '.htaccess' -o -name '.htpasswd' -o -name '.user.ini' \) -delete 2>/dev/null
+    done
+}
+
+is_nextcloud_service_active() {
+    systemctl --user is-active --quiet "$NEXTCLOUD_SERVICE" 2>/dev/null
 }
 
 audit_rclone_binary() {
@@ -229,64 +258,126 @@ patch_direct_unit() {
         return 1
     fi
 
+    if ! command -v python3 >/dev/null 2>&1; then
+        rm -f "$tmp"
+        log_error "python3 is required to safely rewrite a systemd ExecStart line."
+    fi
+
     cp -p "$unit" "$backup"
 
-    awk '
-        function flush_block(    i) {
-            if (has_exclude == 1) {
-                for (i = 1; i <= block_count; i++) {
-                    print block[i]
-                }
-            } else if (block_count == 1) {
-                print block[1] " --exclude-from %h/.config/rclone/nextcloud-excludes.txt"
-                patched=1
-            } else {
-                for (i = 1; i < block_count; i++) {
-                    print block[i]
-                }
-                print "  --exclude-from %h/.config/rclone/nextcloud-excludes.txt \\"
-                print block[block_count]
-                patched=1
-            }
-            block_count=0
-            in_exec=0
-            has_exclude=0
-        }
+    python3 - "$unit" > "$tmp" <<'PYSYSTEMD'
+import shlex
+import sys
+from pathlib import Path
 
-        BEGIN { in_exec=0; block_count=0; has_exclude=0; patched=0 }
+unit = Path(sys.argv[1])
+lines = unit.read_text().splitlines()
 
-        in_exec == 1 {
-            block[++block_count]=$0
-            if ($0 ~ /--exclude-from/) {
-                has_exclude=1
-            }
-            if ($0 !~ /\\[[:space:]]*$/) {
-                flush_block()
-            }
-            next
-        }
+REQUIRED = [
+    ["--exclude-from", "%h/.config/rclone/nextcloud-excludes.txt"],
+    ["--daemon-timeout", "20s"],
+]
+REQUIRED_FUSE = ["-o", "x-gvfs-hide"]
 
-        /^[[:space:]]*ExecStart=.*rclone[[:space:]]+mount/ {
-            block[++block_count]=$0
-            if ($0 ~ /--exclude-from/) {
-                has_exclude=1
-            }
-            if ($0 ~ /\\[[:space:]]*$/) {
-                in_exec=1
-            } else {
-                flush_block()
-            }
-            next
-        }
 
-        { print }
+def is_execstart_start(line: str) -> bool:
+    return line.lstrip().startswith("ExecStart=")
 
-        END {
-            if (in_exec == 1) {
-                flush_block()
-            }
-        }
-    ' "$unit" > "$tmp"
+
+def collect_block(start: int):
+    block = [lines[start]]
+    i = start
+    while block[-1].rstrip().endswith("\\") and i + 1 < len(lines):
+        i += 1
+        block.append(lines[i])
+    return block, i
+
+
+def block_to_command(block):
+    return " ".join(part.rstrip().rstrip("\\").strip() for part in block)
+
+
+def has_pair(tokens, opt, value):
+    return any(tokens[i] == opt and tokens[i + 1] == value for i in range(len(tokens) - 1))
+
+
+def remove_option_with_value(tokens, opt):
+    out = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == opt:
+            i += 2
+        else:
+            out.append(tokens[i])
+            i += 1
+    return out
+
+
+def render_execstart(tokens):
+    prefix = "ExecStart=" + " ".join(shlex.quote(t) for t in tokens[:4])
+    rest = tokens[4:]
+    if not rest:
+        return [prefix]
+
+    grouped = []
+    i = 0
+    value_options = {
+        "--dir-cache-time", "--vfs-cache-mode", "--vfs-cache-max-age",
+        "--vfs-cache-max-size", "--cache-dir", "--log-level",
+        "--exclude-from", "--daemon-timeout", "-o",
+    }
+    while i < len(rest):
+        if rest[i] in value_options and i + 1 < len(rest):
+            grouped.append([rest[i], rest[i + 1]])
+            i += 2
+        else:
+            grouped.append([rest[i]])
+            i += 1
+
+    rendered = [prefix + " \\"]
+    for idx, group in enumerate(grouped):
+        suffix = " \\" if idx < len(grouped) - 1 else ""
+        rendered.append("  " + " ".join(shlex.quote(t) for t in group) + suffix)
+    return rendered
+
+out = []
+i = 0
+while i < len(lines):
+    line = lines[i]
+    if not is_execstart_start(line):
+        out.append(line)
+        i += 1
+        continue
+
+    block, end = collect_block(i)
+    command = block_to_command(block)
+    if "rclone" not in command or " mount " not in command or "nextcloud:" not in command:
+        out.extend(block)
+        i = end + 1
+        continue
+
+    try:
+        _prefix, rhs = command.split("=", 1)
+        tokens = shlex.split(rhs)
+    except ValueError:
+        out.extend(block)
+        i = end + 1
+        continue
+
+    tokens = remove_option_with_value(tokens, "--poll-interval")
+
+    for opt, value in REQUIRED:
+        if not has_pair(tokens, opt, value):
+            tokens.extend([opt, value])
+
+    if not has_pair(tokens, "-o", "x-gvfs-hide"):
+        tokens.extend(REQUIRED_FUSE)
+
+    out.extend(render_execstart(tokens))
+    i = end + 1
+
+print("\n".join(out))
+PYSYSTEMD
 
     if cmp -s "$unit" "$tmp"; then
         rm -f "$tmp"
@@ -296,8 +387,18 @@ patch_direct_unit() {
 
     mv "$tmp" "$unit"
     chmod --reference="$backup" "$unit" 2>/dev/null || chmod 644 "$unit"
-    log_success "Patched $unit"
+    log_success "Patched $unit with the standard Nextcloud hardening profile."
     echo "Backup: $backup"
+}
+
+unit_has_standard_nextcloud_hardening() {
+    local unit="$1"
+    local execs
+    execs="$(normalize_unit_execstart "$unit" || true)"
+    grep -Eq -- '--exclude-from[[:space:]]+.*nextcloud-excludes\.txt' <<<"$execs" \
+        && grep -Eq -- '(^|[[:space:]])-o[[:space:]]+x-gvfs-hide([[:space:]]|$)' <<<"$execs" \
+        && grep -Eq -- '--daemon-timeout[[:space:]]+20s' <<<"$execs" \
+        && ! grep -Eq -- '--poll-interval[[:space:]]+30s' <<<"$execs"
 }
 
 audit_nextcloud_user_services() {
@@ -333,17 +434,18 @@ audit_nextcloud_user_services() {
         normalize_unit_execstart "$unit" | sed 's/^/  /' || true
 
         if grep -Eq 'rclone[[:space:]]+mount[[:space:]]+nextcloud:' "$unit"; then
-            if grep -Eq -- '--exclude-from[[:space:]]+.*nextcloud-excludes\.txt' "$unit"; then
-                log_success "This direct Nextcloud rclone mount service already uses the standard exclude file."
+            if unit_has_standard_nextcloud_hardening "$unit"; then
+                log_success "This direct Nextcloud rclone mount service already uses the standard hardening profile."
             elif [[ "$unit" == "$HOME/.config/systemd/user/"* && -w "$unit" ]]; then
-                log_warn "This direct Nextcloud rclone mount service does not use --exclude-from."
-                if [[ -f "$EXCLUDES_FILE" ]] && confirm "Patch this user service to add the standard exclude file?"; then
+                log_warn "This direct Nextcloud rclone mount service is missing part of the standard hardening profile."
+                echo "  Required: --exclude-from nextcloud-excludes.txt, -o x-gvfs-hide, --daemon-timeout 20s, no --poll-interval 30s"
+                if [[ -f "$EXCLUDES_FILE" ]] && confirm "Patch this user service with the standard Nextcloud hardening profile?"; then
                     patch_direct_unit "$unit" || true
                     systemctl --user daemon-reload || log_warn "systemctl --user daemon-reload failed."
                     log_warn "Restart the service after reviewing the patch: systemctl --user restart $(basename "$unit")"
                 fi
             else
-                log_warn "This direct Nextcloud rclone mount service lacks --exclude-from but is not a writable user unit."
+                log_warn "This direct Nextcloud rclone mount service lacks the standard hardening profile but is not a writable user unit."
             fi
         else
             execs="$(normalize_unit_execstart "$unit" || true)"
@@ -366,14 +468,67 @@ audit_nextcloud_user_services() {
         | grep -Ei 'nextcloud' || log_warn "No active/listed user service mentions Nextcloud."
 }
 
+audit_stale_forbidden_vfs_cache() {
+    echo
+    log_info "Checking stale forbidden files in the Nextcloud rclone VFS cache..."
+
+    local stale_entries
+    stale_entries="$(find_stale_forbidden_cache_entries || true)"
+
+    if [[ -z "$stale_entries" ]]; then
+        log_success "No stale .htaccess/.htpasswd/.user.ini entries found in the Nextcloud rclone VFS cache."
+        return
+    fi
+
+    log_warn "Found stale forbidden files in the Nextcloud rclone VFS cache:"
+    printf '%s\n' "$stale_entries" | sed 's/^/  /'
+
+    if [[ "$AUDIT_ONLY" -eq 1 ]]; then
+        log_warn "Audit-only mode: leaving stale cache entries untouched."
+        return
+    fi
+
+    if ! confirm "Stop $NEXTCLOUD_SERVICE, remove these stale cache entries, and restart it if it was active?"; then
+        log_warn "Leaving stale cache entries untouched."
+        return
+    fi
+
+    local was_active=0
+    if is_nextcloud_service_active; then
+        was_active=1
+        log_info "Stopping $NEXTCLOUD_SERVICE before cache cleanup..."
+        systemctl --user stop "$NEXTCLOUD_SERVICE" || log_warn "Could not stop $NEXTCLOUD_SERVICE cleanly."
+    else
+        log_info "$NEXTCLOUD_SERVICE is not active; cache cleanup can proceed without stopping it."
+    fi
+
+    delete_stale_forbidden_cache_entries
+
+    local remaining
+    remaining="$(find_stale_forbidden_cache_entries || true)"
+    if [[ -z "$remaining" ]]; then
+        log_success "Stale forbidden cache entries removed."
+    else
+        log_warn "Some stale forbidden cache entries remain:"
+        printf '%s\n' "$remaining" | sed 's/^/  /'
+    fi
+
+    if [[ "$was_active" -eq 1 ]]; then
+        log_info "Restarting $NEXTCLOUD_SERVICE..."
+        systemctl --user start "$NEXTCLOUD_SERVICE" || log_warn "Could not restart $NEXTCLOUD_SERVICE."
+    fi
+}
+
 print_next_steps() {
     echo
-    log_info "Recommended next checks on Surface 7:"
+    log_info "Recommended next checks on this Ubuntu/ZorinOS laptop:"
     cat <<EOF
   time rclone lsd nextcloud:/
   time rclone lsjson nextcloud:/ --max-depth 1 --fast-list
   time ls -la /media/$USER/nextcloud | head
+  systemctl --user cat nextcloud-rclone.service | grep -E 'exclude-from|x-gvfs-hide|daemon-timeout|poll-interval'
   journalctl --user -u nextcloud-rclone.service -n 200 --no-pager
+  find ~/.local/share/rclone/cache/vfs/nextcloud ~/.local/share/rclone/cache/vfsMeta/nextcloud -name '.htaccess' -print
 
 If a service was patched:
   systemctl --user restart nextcloud-rclone.service
@@ -382,12 +537,13 @@ EOF
 }
 
 main() {
-    log_info "Surface 7 Nextcloud rclone audit for user '$USER' on host '$(hostname)'."
+    log_info "Ubuntu/ZorinOS laptop Nextcloud rclone audit for user '$USER' on host '$(hostname)'."
     audit_rclone_binary
     audit_rclone_config
     audit_excludes_file
     audit_nextcloud_mounts
     audit_nextcloud_user_services
+    audit_stale_forbidden_vfs_cache
     print_next_steps
     log_success "Nextcloud audit/repair completed."
 }
