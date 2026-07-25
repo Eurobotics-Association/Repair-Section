@@ -1,13 +1,13 @@
-# Ubuntu 24.04 — Nextcloud via rclone mount (GNOME Files integration)
+# Ubuntu 24.04 / ZorinOS — Nextcloud via rclone mount (GNOME / Zorin Files integration)
 
-This document describes a production-oriented setup to access a **Nextcloud** account on **Ubuntu 24.04** using **rclone mount (FUSE)**, with a **systemd user service** so the mount appears as a local drive and is usable from **GNOME Files**.
+This document describes a production-oriented setup to access a **Nextcloud** account on **Ubuntu 24.04** and **ZorinOS** using **rclone mount (FUSE)**, with a **systemd user service** so the mount is available through a stable local path and remains usable from **GNOME Files / Zorin Files** without letting the desktop probe it too aggressively.
 
 This design follows the same operational spirit as the validated Dropbox Business rclone setup already used on your systems, while adapting the remote type and mount pathing for Nextcloud.
 
 ## Scope
 
 * Access Nextcloud through `rclone mount`
-* Make the mount visible in Linux file managers
+* Make the mount accessible from Linux file managers without encouraging aggressive automatic probing
 * Run the mount reliably through a **systemd user service**
 * Create a standard homelab rclone exclude policy for Nextcloud-backed storage
 * Install with a root-run installer that prepares the target user environment
@@ -52,6 +52,7 @@ This can be useful for scripts or users who prefer a stable technical path.
 ## 2.1 Supported environment
 
 * Ubuntu 24.04
+* ZorinOS on the Ubuntu package base
 * systemd user session available
 * Internet connectivity
 * A target desktop user already exists
@@ -69,9 +70,32 @@ apt install -y rclone gvfs-backends fuse3 libnotify-bin
 Purpose:
 
 * `rclone` → remote access and mounting
-* `gvfs-backends` → better integration with GNOME Files / desktop environment
+* `gvfs-backends` → desktop integration for GNOME Files / Zorin Files and file pickers
 * `fuse3` → FUSE mount support
 * `libnotify-bin` → optional desktop notifications
+
+---
+
+# 2.3 Ubuntu versus ZorinOS
+
+Use the same Nextcloud rclone architecture on Ubuntu and ZorinOS:
+
+```text
+rclone mount → FUSE → WebDAV/Nextcloud → GNOME/GVfs/Zorin Files
+```
+
+The **rclone**, **FUSE**, **systemd user service**, and **Nextcloud WebDAV** parts should behave similarly. The difference is mainly in the desktop layer: Zorin Files, file pickers, portals, thumbnailers, and suspend/resume timing may probe the mount differently from stock Ubuntu GNOME.
+
+Therefore the default service profile is the same on both systems, but every laptop should be validated with:
+
+```bash
+systemctl --user status nextcloud-rclone.service --no-pager
+journalctl --user -u nextcloud-rclone.service -n 120 --no-pager
+time rclone lsd nextcloud:/
+time ls -la /media/$USER/nextcloud | head
+```
+
+Also test at least two suspend/resume cycles after the service is patched.
 
 ---
 
@@ -219,8 +243,9 @@ ExecStartPre=/usr/bin/mkdir -p /media/%u/nextcloud
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/rclone/cache
 ExecStart=/usr/bin/rclone mount nextcloud:/ /media/%u/nextcloud \
   --allow-other \
+  -o x-gvfs-hide \
+  --daemon-timeout 20s \
   --dir-cache-time 72h \
-  --poll-interval 30s \
   --vfs-cache-mode writes \
   --vfs-cache-max-age 24h \
   --vfs-cache-max-size 10G \
@@ -238,8 +263,10 @@ WantedBy=default.target
 ## Why these options
 
 * `--allow-other` → helps visibility / usability in desktop context
+* `-o x-gvfs-hide` → asks GNOME/GVfs not to present the mount as a normal automatically-enumerated volume; the direct path remains usable
+* `--daemon-timeout 20s` → caps blocked kernel/FUSE responses during network loss or suspend/resume races
 * `--dir-cache-time 72h` → reduces repeated directory listing cost
-* `--poll-interval 30s` → periodic refresh
+* no `--poll-interval` → WebDAV/Nextcloud does not support rclone polling, so keeping it only adds log noise
 * `--vfs-cache-mode writes` → safer writes than no VFS cache
 * `--vfs-cache-max-age 24h` and `--vfs-cache-max-size 10G` → bounded cache
 * `--exclude-from %h/.config/rclone/nextcloud-excludes.txt` → standard homelab policy for files that should not enter Nextcloud storage
@@ -388,9 +415,9 @@ https://<host>/remote.php/dav/files/<username>/
 
 Do not use a generic server root URL when the per-user path is required.
 
-## 11.5 Surface Pro 7 / laptop-specific investigation
+## 11.5 Ubuntu / ZorinOS laptop-specific investigation
 
-The Surface 7 may behave differently from servers or fixed desktops because of Wi-Fi power management, suspend/resume behavior, FUSE state, kernel flavor, and large interactive file-manager directory scans.
+Ubuntu and ZorinOS laptops may behave differently from servers or fixed desktops because of Wi-Fi power management, suspend/resume behavior, FUSE state, kernel flavor, GNOME/Zorin desktop integration, and large interactive file-manager directory scans. ZorinOS is Ubuntu-family, so the rclone/FUSE/WebDAV layer is similar, but the file manager, portal, thumbnailer, and desktop probing behaviour can differ.
 
 Known Surface Pro 7 Dropbox baseline, for reference only:
 
@@ -428,84 +455,110 @@ rclone copy ...
 rclone check ...
 ```
 
-Then run a small timing baseline:
+Useful diagnostics on the laptop:
 
 ```bash
-time rclone lsd nextcloud:/
-time rclone lsjson nextcloud:/ --max-depth 1 --fast-list
-time rclone about nextcloud:
-```
-
-If a write operation is slow, compare a tiny file and a directory traversal:
-
-```bash
-tmpfile="$(mktemp)"
-printf 'nextcloud-rclone-test\n' > "$tmpfile"
-time rclone copy "$tmpfile" nextcloud:/rclone-test/ --exclude-from ~/.config/rclone/nextcloud-excludes.txt -vv
-time rclone check "$tmpfile" nextcloud:/rclone-test/ --exclude-from ~/.config/rclone/nextcloud-excludes.txt -vv
-rm -f "$tmpfile"
-```
-
-If `rclone mount` is the slow part, check whether the delay is mount startup, first directory listing, or GNOME Files scanning:
-
-```bash
-time systemctl --user restart nextcloud-rclone.service
 systemctl --user status nextcloud-rclone.service --no-pager
 journalctl --user -u nextcloud-rclone.service -n 200 --no-pager
-time ls -la /media/$USER/nextcloud | head
+rclone lsd nextcloud:/
+time rclone lsjson nextcloud:/ --max-depth 1 --fast-list
 ```
 
-The key diagnostic question is whether slowness appears only with a large tree, only through the mounted filesystem, or also with direct `rclone` WebDAV commands. A fast simple WebDAV test, such as a sub-second command, usually means the delay is caused by traversal, cache warm-up, file-manager probing, or command options rather than basic Nextcloud connectivity.
+If a specific directory is slow in the file manager, compare direct rclone versus FUSE mount access:
+
+```bash
+time rclone lsjson 'nextcloud:/PATH/TO/SLOW/FOLDER' --max-depth 1 --fast-list -vv
+time ls -la '/media/<user>/nextcloud/PATH/TO/SLOW/FOLDER' | head
+```
+
+Interpretation:
+
+* direct `rclone` slow → likely WebDAV / Nextcloud / remote-tree / server-side metadata issue
+* direct `rclone` fast but `/media/...` slow → likely FUSE / VFS / file-manager interaction
+* only GNOME/Zorin Files slow → likely thumbnails, previews, portals, or desktop probing
+
+## 11.6 Ubuntu / ZorinOS laptop hardening profile
+
+A laptop using Nextcloud through rclone mount is more exposed to suspend/resume races than a fixed server. This applies to Ubuntu and ZorinOS because the core path is the same: rclone mount → FUSE → WebDAV/Nextcloud → GNOME/GVfs/Zorin Files. On the Surface 7, the relevant failure sequence was:
+
+```text
+GNOME portal → statfs() on mounted filesystems → rclone FUSE
+             → Nextcloud/ZeroTier did not answer
+             → GNOME threads entered uninterruptible D state
+             → suspend could not freeze those threads
+```
+
+The standard laptop profile is:
+
+```text
+-o x-gvfs-hide
+--daemon-timeout 20s
+```
+
+Operational meaning:
+
+* `-o x-gvfs-hide` reduces GNOME/GVfs automatic presentation and probing of the mount. The mount remains accessible at `/media/<user>/nextcloud`; bookmark the useful subfolders manually if needed.
+* `--daemon-timeout 20s` prevents rclone from waiting indefinitely before answering the kernel during a network interruption.
+* `--poll-interval 30s` is deliberately removed for Nextcloud/WebDAV because the remote reports that polling is not supported.
+
+Recommended rollout:
+
+1. Add `-o x-gvfs-hide`.
+2. Add `--daemon-timeout 20s`.
+3. Remove `--poll-interval 30s` from the Nextcloud service.
+4. Restart the user service.
+5. Test file dialogs and suspend/resume several times.
+6. Only then evaluate `--vfs-cache-mode full`, if repeated reads or seeking are slow.
+
+The laptop audit/repair script checks and can patch this profile on direct `rclone mount nextcloud:` user services. It is valid for Ubuntu/ZorinOS-style user services and does not modify Dropbox or any non-Nextcloud rclone mount.
+
+## 11.7 Stale forbidden files in local rclone VFS cache
+
+If a laptop previously tried to write or delete Nextcloud-forbidden files before the exclude policy was applied, rclone may keep stale upload attempts in its local VFS cache. The typical symptom is repeated journal entries such as:
+
+```text
+.htaccess: vfs cache: failed to upload
+OCP\Files\ForbiddenException
+Invalid path
+```
+
+The standard Ubuntu/ZorinOS laptop audit-repair script includes a dedicated pass for this case. It checks only the Nextcloud rclone cache roots:
+
+```text
+~/.local/share/rclone/cache/vfs/nextcloud
+~/.local/share/rclone/cache/vfsMeta/nextcloud
+```
+
+and only removes stale server-forbidden filenames:
+
+```text
+.htaccess
+.htpasswd
+.user.ini
+```
+
+Manual equivalent:
+
+```bash
+systemctl --user stop nextcloud-rclone.service
+
+find ~/.local/share/rclone/cache/vfs/nextcloud ~/.local/share/rclone/cache/vfsMeta/nextcloud \
+  \( -name '.htaccess' -o -name '.htpasswd' -o -name '.user.ini' \) -print
+
+find ~/.local/share/rclone/cache/vfs/nextcloud ~/.local/share/rclone/cache/vfsMeta/nextcloud \
+  \( -name '.htaccess' -o -name '.htpasswd' -o -name '.user.ini' \) -delete
+
+systemctl --user start nextcloud-rclone.service
+```
+
+When stale entries are found, the script asks before stopping `nextcloud-rclone.service`, deleting the stale cache entries, and restarting the service if it was active.
 
 ---
 
-# 12) Uninstall / cleanup
+# 12) Summary recommendation
 
-Disable service:
+Use `rclone mount` for large Nextcloud trees where full local sync is not acceptable.
 
-```bash
-systemctl --user disable --now nextcloud-rclone.service
-```
+Use the Nextcloud desktop client only when selective sync with local copies is acceptable.
 
-Remove unit file:
-
-```bash
-rm -f ~/.config/systemd/user/nextcloud-rclone.service
-systemctl --user daemon-reload
-```
-
-Remove symlink and mountpoint:
-
-```bash
-rm -f /mnt/<user>/nextcloud
-rmdir /media/<user>/nextcloud
-```
-
-Optional cache cleanup:
-
-```bash
-rm -rf ~/.local/share/rclone/cache
-```
-
----
-
-# 13) Operational notes
-
-* This approach is appropriate when you need **full tree visibility without full local sync**.
-* It is well suited for admin verification, migration validation, and desktop browsing of large repositories.
-* It avoids the storage explosion of the official Nextcloud sync client on very large datasets.
-* For sensitive or production environments, prefer **Nextcloud app passwords** over normal user passwords when configuring the WebDAV remote.
-
----
-
-# 14) Summary
-
-This setup provides:
-
-* no full local replication
-* GNOME-visible mount
-* systemd-managed reliability
-* a predictable user-scoped service model
-* a technical path suitable for large Nextcloud datasets
-
-It is the appropriate model when the goal is **access and verification**, not desktop synchronization.
+Use the standard homelab exclude policy everywhere to avoid Nextcloud/WebDAV reserved-file errors and inconsistent Linux laptop behavior.
