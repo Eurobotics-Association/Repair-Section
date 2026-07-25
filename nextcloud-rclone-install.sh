@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Nextcloud rclone mount installer for Ubuntu 24.04
+# Nextcloud rclone mount installer for Ubuntu 24.04 and ZorinOS laptops
 # Scope: Nextcloud only. This script must not modify Dropbox or other rclone services.
 # Eurobotics 2026 - GNU
-# v.20260627.0002
+# v.20260627.0004
 
 set -euo pipefail
 
@@ -33,12 +33,30 @@ require_root() {
 check_os() {
     if [[ -r /etc/os-release ]]; then
         . /etc/os-release
-        if [[ "${ID:-}" != "ubuntu" ]]; then
-            log_warn "Detected OS ID='${ID:-unknown}'. This script is intended for Ubuntu 24.04."
-        fi
-        if [[ "${VERSION_ID:-}" != "24.04" ]]; then
-            log_warn "Detected Ubuntu version '${VERSION_ID:-unknown}'. This script was designed for Ubuntu 24.04."
-        fi
+        local os_id="${ID:-unknown}"
+        local os_like="${ID_LIKE:-}"
+        local pretty="${PRETTY_NAME:-$os_id}"
+
+        case "$os_id" in
+            ubuntu)
+                if [[ "${VERSION_ID:-}" != "24.04" ]]; then
+                    log_warn "Detected $pretty. This script is validated on Ubuntu 24.04; continue only if you accept testing on this Ubuntu version."
+                else
+                    log_success "Detected supported OS: $pretty."
+                fi
+                ;;
+            zorin)
+                log_success "Detected ZorinOS: $pretty. Treating it as Ubuntu-family for the Nextcloud rclone mount."
+                log_warn "ZorinOS desktop/GVfs behaviour can differ from stock Ubuntu; validate file dialogs and suspend/resume after install."
+                ;;
+            *)
+                if [[ "$os_like" == *ubuntu* || "$os_like" == *debian* ]]; then
+                    log_warn "Detected Ubuntu/Debian-like OS: $pretty. Script may work, but is validated only for Ubuntu 24.04 and ZorinOS."
+                else
+                    log_warn "Detected OS ID='$os_id'. This script is intended for Ubuntu 24.04 or ZorinOS."
+                fi
+                ;;
+        esac
     else
         log_warn "/etc/os-release not found. Cannot verify OS."
     fi
@@ -224,8 +242,9 @@ ExecStartPre=/usr/bin/mkdir -p /media/%u/nextcloud
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/rclone/cache
 ExecStart=/usr/bin/rclone mount ${NEXTCLOUD_REMOTE}:/ /media/%u/nextcloud \
   --allow-other \
+  -o x-gvfs-hide \
+  --daemon-timeout 20s \
   --dir-cache-time 72h \
-  --poll-interval 30s \
   --vfs-cache-mode writes \
   --vfs-cache-max-age 24h \
   --vfs-cache-max-size 10G \
@@ -335,6 +354,11 @@ Check service status:
 
 Check recent logs:
   sudo -u $TARGET_USER -H bash -lc 'journalctl --user -u nextcloud-rclone.service -n 200 --no-pager'
+
+Mount hardening included by default:
+  - -o x-gvfs-hide to reduce GNOME/GVfs automatic probing
+  - --daemon-timeout 20s to cap blocked FUSE kernel responses
+  - no --poll-interval, because WebDAV/Nextcloud does not support rclone polling
 
 If the mount becomes stale:
   fusermount3 -uz $MOUNT_DIR || true
