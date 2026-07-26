@@ -42,8 +42,8 @@ Merci de nous envoyer :
 - Une **description du matériel**
 - Les **symptômes rencontrés**
 
-📧 **Email** : [reparation@eurobotic.org](mailto:reparation@eurobotic.org)  
-📱 **WhatsApp ou SMS uniquement** : 07 57 75 52 69  
+📩 Contact : [contact@eurobotics.org](mailto:contact@eurobotics.org)  
+Objet : `Repair Chantilly / Senlis  / Lamorlaye / Gouvieux`
 📞 Nous vous **rappellerons** pour fixer un rendez-vous.
 
 ---
@@ -63,7 +63,7 @@ Merci de nous envoyer :
 Si vous souhaitez rejoindre l’équipe Repair ou soutenir nos actions :
 
 📩 Contact : [contact@eurobotics.org](mailto:contact@eurobotics.org)  
-Objet : `Repair Chantilly`
+Objet : `Repair Chantilly / Senlis  / Lamorlaye / Gouvieux`
 
 ---
 
