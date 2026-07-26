@@ -63,7 +63,7 @@ Objet : `Repair Chantilly / Senlis  / Lamorlaye / Gouvieux`
 Si vous souhaitez rejoindre l’équipe Repair ou soutenir nos actions :
 
 📩 Contact : [contact@eurobotics.org](mailto:contact@eurobotics.org)  
-Objet : `Repair Chantilly / Senlis  / Lamorlaye / Gouvieux`
+Objet : `Bénévolat - Repair Chantilly / Senlis  / Lamorlaye / Gouvieux`
 
 ---
 
