@@ -457,6 +457,48 @@ time ls -la /media/$USER/nextcloud | head
 
 The key diagnostic question is whether slowness appears only with a large tree, only through the mounted filesystem, or also with direct `rclone` WebDAV commands. A fast simple WebDAV test, such as a sub-second command, usually means the delay is caused by traversal, cache warm-up, file-manager probing, or command options rather than basic Nextcloud connectivity.
 
+## 11.6 Stale forbidden files in rclone VFS cache
+
+If a laptop previously tried to write or delete Nextcloud-forbidden files before the exclude policy was applied, rclone may keep stale upload attempts in its local VFS cache. The typical symptom is repeated journal entries such as:
+
+```text
+.htaccess: vfs cache: failed to upload
+OCP\Files\ForbiddenException
+Invalid path
+```
+
+The standard Surface / laptop audit-repair script includes a dedicated pass for this case. It checks only the Nextcloud rclone cache roots:
+
+```text
+~/.local/share/rclone/cache/vfs/nextcloud
+~/.local/share/rclone/cache/vfsMeta/nextcloud
+```
+
+and only removes stale server-forbidden filenames:
+
+```text
+.htaccess
+.htpasswd
+.user.ini
+```
+
+The repair flow is:
+
+```bash
+./surface7-nextcloud-rclone-audit.sh --audit-only
+./surface7-nextcloud-rclone-audit.sh
+```
+
+When stale entries are found, the script asks before stopping `nextcloud-rclone.service`, deleting the stale cache entries, and restarting the service if it was active.
+
+Manual verification after cleanup:
+
+```bash
+journalctl --user -u nextcloud-rclone.service --since "now - 5 minutes" --no-pager
+find ~/.local/share/rclone/cache/vfs/nextcloud ~/.local/share/rclone/cache/vfsMeta/nextcloud \
+  \( -name '.htaccess' -o -name '.htpasswd' -o -name '.user.ini' \) -print
+```
+
 ---
 
 # 12) Uninstall / cleanup
