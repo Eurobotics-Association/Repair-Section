@@ -256,7 +256,49 @@ systemctl --user status nextcloud-rclone.service --no-pager
 
 ---
 
-## 9. Laptop audit/repair script
+## 9. Desktop restart launcher
+
+The installer also creates a desktop launcher so non-technical users can recover a stale or disconnected Nextcloud rclone mount without typing terminal commands.
+
+Installed files:
+
+```text
+~/.local/bin/restart-nextcloud-rclone.sh
+~/.local/share/icons/hicolor/scalable/apps/nextcloud-rclone-restart.svg
+~/Desktop/restart-nextcloud-rclone.desktop
+```
+
+The launcher appears as:
+
+```text
+Restart Nextcloud rclone
+```
+
+It uses a blue Nextcloud-style icon with a restart arrow. On first use, Ubuntu or ZorinOS may require the user to right-click the desktop file and choose **Allow Launching**.
+
+The helper script performs only this Nextcloud-specific sequence:
+
+```bash
+systemctl --user stop nextcloud-rclone.service
+fusermount3 -uz /media/$USER/nextcloud || true
+systemctl --user daemon-reload
+systemctl --user start nextcloud-rclone.service
+```
+
+It then checks whether `nextcloud-rclone.service` is active and opens `/media/$USER/nextcloud` if the restart succeeded.
+
+Safety boundary:
+
+```text
+Touches only: nextcloud-rclone.service and /media/$USER/nextcloud
+Never touches: Dropbox, dpbx:, dropbox-rclone.service, or any other rclone mount
+```
+
+This launcher is intended for exactly the intermittent stale/disconnected FUSE mount case observed on Ubuntu-family laptops: direct WebDAV remains correct, while the rclone-mounted view temporarily appears stale or disconnected.
+
+---
+
+## 10. Laptop audit/repair script
 
 Use:
 
@@ -307,7 +349,7 @@ and can remove only:
 
 ---
 
-## 10. Intermittent stale view or disconnect in GNOME/Zorin Files
+## 11. Intermittent stale view or disconnect in GNOME/Zorin Files
 
 Observed behaviour on the Surface Pro 7:
 
@@ -363,7 +405,7 @@ Do not delete the full rclone cache as a first reaction. Start with the service 
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 ### Transport endpoint is not connected
 
@@ -420,7 +462,7 @@ systemctl --user start nextcloud-rclone.service
 
 ---
 
-## 12. Known Surface Pro 7 Dropbox baseline — reference only
+## 13. Known Surface Pro 7 Dropbox baseline — reference only
 
 The Surface has a separate Dropbox service:
 
@@ -434,7 +476,7 @@ This Dropbox service is not part of the Nextcloud issue. Do not add `nextcloud-e
 
 ---
 
-## 13. Public troubleshooting note
+## 14. Public troubleshooting note
 
 The Surface experiments may be useful to other Linux users because they document real rclone/Nextcloud/WebDAV/FUSE behaviour on Ubuntu-family laptops:
 
@@ -444,12 +486,13 @@ The Surface experiments may be useful to other Linux users because they document
 * Ubuntu apt rclone 1.60.x did not accept `-o x-gvfs-hide` in this setup.
 * Nextcloud/WebDAV should use `--poll-interval 0`.
 * `.htaccess`, `.htpasswd`, and `.user.ini` should be excluded and stale VFS cache entries may need targeted cleanup.
+* A desktop restart launcher is useful for family laptops when the rclone FUSE mount is stale or disconnected.
 
 A public Reddit/forum post should avoid exposing private hostnames, IPs, usernames, family names, repository secrets, or file paths containing personal information.
 
 ---
 
-## 14. Summary
+## 15. Summary
 
 For Ubuntu/ZorinOS laptops using Nextcloud over rclone mount:
 
@@ -458,5 +501,6 @@ For Ubuntu/ZorinOS laptops using Nextcloud over rclone mount:
 * use `--daemon-timeout 20s`
 * use `--poll-interval 0`
 * do not use `-o x-gvfs-hide` with Ubuntu apt rclone 1.60.x
+* install the desktop restart launcher for non-technical recovery
 * understand that rclone mount can temporarily show a stale cached view while direct WebDAV is fresh
 * keep Dropbox completely out of scope
