@@ -30,6 +30,26 @@ Do **not** use `-o x-gvfs-hide` as a standard option for Ubuntu/ZorinOS apt rclo
 
 Do **not** add the Nextcloud exclude file to Dropbox services. Existing Zorin Dropbox rclone documentation and scripts are separate and must remain Dropbox-only.
 
+## Desktop restart launcher
+
+The shared installer now creates a Nextcloud-only desktop launcher:
+
+```text
+~/Desktop/restart-nextcloud-rclone.desktop
+~/.local/bin/restart-nextcloud-rclone.sh
+~/.local/share/icons/hicolor/scalable/apps/nextcloud-rclone-restart.svg
+```
+
+The launcher appears as:
+
+```text
+Restart Nextcloud rclone
+```
+
+It stops `nextcloud-rclone.service`, lazy-unmounts `/media/$USER/nextcloud`, reloads the user systemd daemon, and starts the service again. It must not touch Dropbox or any non-Nextcloud rclone mount.
+
+On first use, ZorinOS may ask the user to right-click the launcher and allow launching.
+
 ## ZorinOS validation checklist
 
 After installing or repairing the Nextcloud mount, run as the desktop user:
