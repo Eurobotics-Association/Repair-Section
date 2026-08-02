@@ -2,7 +2,7 @@
 # Nextcloud rclone mount installer for Ubuntu 24.04 and ZorinOS laptops
 # Scope: Nextcloud only. This script must not modify Dropbox or other rclone services.
 # Eurobotics 2026 - GNU
-# v.20260802.0001
+# v.20260802.0002
 
 set -euo pipefail
 
@@ -16,6 +16,9 @@ LOGFILE="/var/log/nextcloud-rclone-install.log"
 NEXTCLOUD_REMOTE="nextcloud"
 NEXTCLOUD_SERVICE="nextcloud-rclone.service"
 NEXTCLOUD_EXCLUDES_NAME="nextcloud-excludes.txt"
+NEXTCLOUD_RESTART_SCRIPT="restart-nextcloud-rclone.sh"
+NEXTCLOUD_RESTART_DESKTOP="restart-nextcloud-rclone.desktop"
+NEXTCLOUD_RESTART_ICON="nextcloud-rclone-restart.svg"
 mkdir -p "$(dirname "$LOGFILE")"
 exec > >(tee -a "$LOGFILE") 2>&1
 
@@ -151,10 +154,15 @@ prepare_directories() {
     RCLONE_CONFIG_DIR="$TARGET_HOME/.config/rclone"
     EXCLUDES_FILE="$RCLONE_CONFIG_DIR/$NEXTCLOUD_EXCLUDES_NAME"
     CACHE_DIR="$TARGET_HOME/.local/share/rclone/cache"
-    log_info "Creating mount and service directories..."
-    mkdir -p "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT" "$USER_SYSTEMD_DIR" "$RCLONE_CONFIG_DIR" "$CACHE_DIR"
-    chown "$TARGET_UID:$TARGET_GID" "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT" "$USER_SYSTEMD_DIR" "$RCLONE_CONFIG_DIR" "$CACHE_DIR"
-    chmod 755 "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT"
+    USER_BIN_DIR="$TARGET_HOME/.local/bin"
+    USER_ICON_DIR="$TARGET_HOME/.local/share/icons/hicolor/scalable/apps"
+    USER_DESKTOP_DIR=$(sudo -H -u "$TARGET_USER" bash -lc 'xdg-user-dir DESKTOP 2>/dev/null || printf "%s/Desktop" "$HOME"')
+    [[ -n "$USER_DESKTOP_DIR" ]] || USER_DESKTOP_DIR="$TARGET_HOME/Desktop"
+
+    log_info "Creating mount, service, icon, and launcher directories..."
+    mkdir -p "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT" "$USER_SYSTEMD_DIR" "$RCLONE_CONFIG_DIR" "$CACHE_DIR" "$USER_BIN_DIR" "$USER_ICON_DIR" "$USER_DESKTOP_DIR"
+    chown "$TARGET_UID:$TARGET_GID" "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT" "$USER_SYSTEMD_DIR" "$RCLONE_CONFIG_DIR" "$CACHE_DIR" "$USER_BIN_DIR" "$USER_ICON_DIR" "$USER_DESKTOP_DIR"
+    chmod 755 "$MOUNT_ROOT" "$MOUNT_DIR" "$TECH_ROOT" "$USER_BIN_DIR" "$USER_ICON_DIR" "$USER_DESKTOP_DIR"
     if [[ -L "$TECH_PATH" || -e "$TECH_PATH" ]]; then
         if [[ -L "$TECH_PATH" ]]; then
             local current_target
@@ -240,6 +248,91 @@ EOF
     log_success "Service unit written."
 }
 
+write_restart_launcher() {
+    RESTART_SCRIPT="$USER_BIN_DIR/$NEXTCLOUD_RESTART_SCRIPT"
+    RESTART_ICON="$USER_ICON_DIR/$NEXTCLOUD_RESTART_ICON"
+    RESTART_DESKTOP="$USER_DESKTOP_DIR/$NEXTCLOUD_RESTART_DESKTOP"
+
+    log_info "Writing Nextcloud restart helper script, icon, and desktop launcher..."
+
+    cat > "$RESTART_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE="nextcloud-rclone.service"
+MOUNT="/media/$USER/nextcloud"
+
+notify() {
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "Nextcloud rclone" "$1"
+  fi
+}
+
+notify "Restarting Nextcloud rclone mount..."
+
+systemctl --user stop "$SERVICE" || true
+sleep 1
+fusermount3 -uz "$MOUNT" 2>/dev/null || true
+sleep 1
+systemctl --user daemon-reload
+systemctl --user start "$SERVICE"
+sleep 2
+
+if systemctl --user is-active --quiet "$SERVICE"; then
+  notify "Nextcloud rclone restarted successfully."
+  xdg-open "$MOUNT" >/dev/null 2>&1 || true
+  exit 0
+else
+  notify "Nextcloud rclone restart failed. Check journalctl."
+  systemctl --user status "$SERVICE" --no-pager
+  exit 1
+fi
+EOF
+
+    cat > "$RESTART_ICON" <<'EOF'
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0082c9"/>
+      <stop offset="100%" stop-color="#005f95"/>
+    </linearGradient>
+  </defs>
+  <circle cx="64" cy="64" r="60" fill="url(#bg)"/>
+  <circle cx="46" cy="64" r="14" fill="white"/>
+  <circle cx="64" cy="64" r="20" fill="white"/>
+  <circle cx="82" cy="64" r="14" fill="white"/>
+  <circle cx="46" cy="64" r="7" fill="#0082c9"/>
+  <circle cx="82" cy="64" r="7" fill="#0082c9"/>
+  <circle cx="64" cy="64" r="10" fill="#0082c9"/>
+  <path d="M88 35 A38 38 0 1 0 102 64" fill="none" stroke="white" stroke-width="8" stroke-linecap="round"/>
+  <path d="M88 23 L106 35 L86 45 Z" fill="white"/>
+  <rect x="39" y="91" width="50" height="12" rx="4" fill="white" opacity="0.95"/>
+  <rect x="47" y="96" width="34" height="2.5" rx="1" fill="#0082c9"/>
+</svg>
+EOF
+
+    cat > "$RESTART_DESKTOP" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Restart Nextcloud rclone
+Comment=Stop, lazy-unmount, and restart the Nextcloud rclone mount
+Exec=$RESTART_SCRIPT
+Icon=nextcloud-rclone-restart
+Terminal=true
+Categories=Utility;System;
+EOF
+
+    chown "$TARGET_UID:$TARGET_GID" "$RESTART_SCRIPT" "$RESTART_ICON" "$RESTART_DESKTOP"
+    chmod 755 "$RESTART_SCRIPT"
+    chmod 644 "$RESTART_ICON"
+    chmod 755 "$RESTART_DESKTOP"
+
+    sudo -H -u "$TARGET_USER" gio set "$RESTART_DESKTOP" metadata::trusted true 2>/dev/null || true
+    sudo -H -u "$TARGET_USER" gtk-update-icon-cache "$TARGET_HOME/.local/share/icons/hicolor" 2>/dev/null || true
+
+    log_success "Nextcloud restart launcher written: $RESTART_DESKTOP"
+}
+
 ensure_linger() {
     if command -v loginctl >/dev/null 2>&1; then
         log_info "Ensuring linger is enabled for user '$TARGET_USER'..."
@@ -282,6 +375,8 @@ Mount path       : $MOUNT_DIR
 Technical path   : $TECH_PATH
 Service file     : $SERVICE_FILE
 Exclude policy   : $EXCLUDES_FILE
+Restart helper   : $RESTART_SCRIPT
+Desktop launcher : $RESTART_DESKTOP
 Log file         : $LOGFILE
 
 Create/validate the remote as the target user:
@@ -298,6 +393,10 @@ Note: -o x-gvfs-hide is deliberately NOT used because Ubuntu apt rclone 1.60.x r
 
 Start or restart mount:
   sudo -u $TARGET_USER -H bash -lc 'systemctl --user restart nextcloud-rclone.service'
+
+Desktop restart launcher:
+  Use the "Restart Nextcloud rclone" icon on the desktop.
+  If the desktop asks, right-click it and choose "Allow Launching".
 
 Check logs:
   sudo -u $TARGET_USER -H bash -lc 'journalctl --user -u nextcloud-rclone.service -n 200 --no-pager'
@@ -320,6 +419,7 @@ main() {
     prepare_directories
     write_rclone_excludes
     write_service_unit
+    write_restart_launcher
     ensure_linger
     check_remote_exists
     enable_service_if_possible
