@@ -307,7 +307,63 @@ and can remove only:
 
 ---
 
-## 10. Troubleshooting
+## 10. Intermittent stale view or disconnect in GNOME/Zorin Files
+
+Observed behaviour on the Surface Pro 7:
+
+```text
+Direct WebDAV / GNOME network access sees the current Nextcloud files.
+The rclone FUSE mount sometimes shows an older directory view or appears disconnected.
+After a few minutes, the rclone mount can come back by itself and show the correct files again.
+```
+
+This does **not** necessarily mean Nextcloud lost data or that WebDAV is down. It usually means there are two different access paths:
+
+```text
+GNOME direct WebDAV access     → live WebDAV view
+/media/<user>/nextcloud       → rclone FUSE/VFS cached mount
+```
+
+`rclone mount` is not a synchronization client. It is a filesystem bridge with VFS and directory caches. If the FUSE process, network path, ZeroTier path, or desktop file manager stalls temporarily, the mounted view can look stale while direct WebDAV remains correct.
+
+When this happens, collect evidence before rebooting:
+
+```bash
+date
+systemctl --user status nextcloud-rclone.service --no-pager
+journalctl --user -u nextcloud-rclone.service --since '10 minutes ago' --no-pager
+mount | grep -i nextcloud || true
+time rclone lsd nextcloud:/ --timeout 20s --contimeout 10s
+time rclone lsjson nextcloud:/ --max-depth 1 --fast-list --timeout 20s --contimeout 10s
+time ls -la /media/$USER/nextcloud | head -50
+```
+
+Interpretation:
+
+* direct `rclone lsd nextcloud:/` is fresh, but `/media/$USER/nextcloud` is stale → FUSE/VFS/service/cache issue
+* direct `rclone lsd nextcloud:/` is stale or blocked → WebDAV/Nextcloud/network/ZeroTier path issue
+* GNOME direct WebDAV is fresh, but rclone is stale → rclone mount cache or FUSE state issue, not Nextcloud data loss
+* the mount comes back after a few minutes → likely transient network/FUSE recovery or rclone retry behaviour
+
+Low-impact refresh procedure:
+
+```bash
+systemctl --user restart nextcloud-rclone.service
+```
+
+Stronger refresh if the mount is disconnected:
+
+```bash
+systemctl --user stop nextcloud-rclone.service
+fusermount3 -uz /media/$USER/nextcloud || true
+systemctl --user start nextcloud-rclone.service
+```
+
+Do not delete the full rclone cache as a first reaction. Start with the service restart and the targeted stale forbidden-file cleanup described below.
+
+---
+
+## 11. Troubleshooting
 
 ### Transport endpoint is not connected
 
@@ -364,7 +420,7 @@ systemctl --user start nextcloud-rclone.service
 
 ---
 
-## 11. Known Surface Pro 7 Dropbox baseline — reference only
+## 12. Known Surface Pro 7 Dropbox baseline — reference only
 
 The Surface has a separate Dropbox service:
 
@@ -378,7 +434,22 @@ This Dropbox service is not part of the Nextcloud issue. Do not add `nextcloud-e
 
 ---
 
-## 12. Summary
+## 13. Public troubleshooting note
+
+The Surface experiments may be useful to other Linux users because they document real rclone/Nextcloud/WebDAV/FUSE behaviour on Ubuntu-family laptops:
+
+* Nextcloud Linux desktop sync is not a mature placeholder/on-demand solution for multi-terabyte trees.
+* `rclone mount` is a practical alternative, but it is a FUSE/VFS cached mount, not a sync client.
+* Direct WebDAV and rclone mount can temporarily disagree because they are different access paths.
+* Ubuntu apt rclone 1.60.x did not accept `-o x-gvfs-hide` in this setup.
+* Nextcloud/WebDAV should use `--poll-interval 0`.
+* `.htaccess`, `.htpasswd`, and `.user.ini` should be excluded and stale VFS cache entries may need targeted cleanup.
+
+A public Reddit/forum post should avoid exposing private hostnames, IPs, usernames, family names, repository secrets, or file paths containing personal information.
+
+---
+
+## 14. Summary
 
 For Ubuntu/ZorinOS laptops using Nextcloud over rclone mount:
 
@@ -387,4 +458,5 @@ For Ubuntu/ZorinOS laptops using Nextcloud over rclone mount:
 * use `--daemon-timeout 20s`
 * use `--poll-interval 0`
 * do not use `-o x-gvfs-hide` with Ubuntu apt rclone 1.60.x
+* understand that rclone mount can temporarily show a stale cached view while direct WebDAV is fresh
 * keep Dropbox completely out of scope
