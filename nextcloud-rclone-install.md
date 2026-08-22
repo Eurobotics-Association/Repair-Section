@@ -16,7 +16,7 @@ The compatible Nextcloud service profile is:
 
 ```text
 --allow-other
---dir-cache-time 72h
+--dir-cache-time 5m
 --poll-interval 0
 --vfs-cache-mode writes
 --vfs-cache-max-age 24h
@@ -44,12 +44,15 @@ Therefore the current standard is:
 ```text
 present: --exclude-from %h/.config/rclone/nextcloud-excludes.txt
 present: --daemon-timeout 20s
+present: --dir-cache-time 5m
 present: --poll-interval 0
 absent : -o x-gvfs-hide
 absent : --poll-interval 30s
 ```
 
 `--poll-interval 0` is intentional. Nextcloud/WebDAV does not support polling. Without an explicit value, rclone may still log that polling is unsupported. Setting it to `0` disables polling explicitly.
+
+`--dir-cache-time 5m` limits how long directory listings can remain stale when files are changed through the Nextcloud web UI, a phone, or another computer. WebDAV does not provide change notifications, so a directory is fetched again on the first access after its five-minute cache lifetime expires. This is not a five-minute background polling loop: directories that are not accessed do not generate refresh requests merely because their cache entries expire.
 
 ---
 
@@ -67,7 +70,7 @@ So the default service is the same, but validate every laptop with:
 
 ```bash
 systemctl --user status nextcloud-rclone.service --no-pager
-systemctl --user cat nextcloud-rclone.service | grep -E 'exclude-from|daemon-timeout|poll-interval|x-gvfs-hide'
+systemctl --user cat nextcloud-rclone.service | grep -E 'dir-cache-time|exclude-from|daemon-timeout|poll-interval|x-gvfs-hide'
 journalctl --user -u nextcloud-rclone.service -n 120 --no-pager
 time rclone lsd nextcloud:/
 time ls -la /media/$USER/nextcloud | head
@@ -227,7 +230,7 @@ ExecStartPre=/usr/bin/mkdir -p /media/%u/nextcloud
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/rclone/cache
 ExecStart=/usr/bin/rclone mount nextcloud:/ /media/%u/nextcloud \
   --allow-other \
-  --dir-cache-time 72h \
+  --dir-cache-time 5m \
   --poll-interval 0 \
   --vfs-cache-mode writes \
   --vfs-cache-max-age 24h \
@@ -327,6 +330,7 @@ It checks for:
 ```text
 --exclude-from %h/.config/rclone/nextcloud-excludes.txt
 --daemon-timeout 20s
+--dir-cache-time 5m
 --poll-interval 0
 no -o x-gvfs-hide
 no --poll-interval 30s
@@ -431,7 +435,7 @@ Interpretation:
 ### Check service profile
 
 ```bash
-systemctl --user cat nextcloud-rclone.service | grep -E 'exclude-from|daemon-timeout|poll-interval|x-gvfs-hide'
+systemctl --user cat nextcloud-rclone.service | grep -E 'dir-cache-time|exclude-from|daemon-timeout|poll-interval|x-gvfs-hide'
 ```
 
 Expected:
@@ -439,6 +443,7 @@ Expected:
 ```text
 --exclude-from %h/.config/rclone/nextcloud-excludes.txt
 --daemon-timeout 20s
+--dir-cache-time 5m
 --poll-interval 0
 ```
 
@@ -485,6 +490,7 @@ The Surface experiments may be useful to other Linux users because they document
 * Direct WebDAV and rclone mount can temporarily disagree because they are different access paths.
 * Ubuntu apt rclone 1.60.x did not accept `-o x-gvfs-hide` in this setup.
 * Nextcloud/WebDAV should use `--poll-interval 0`.
+* A short `--dir-cache-time 5m` prevents web or other-client changes from remaining hidden for hours while avoiding background polling.
 * `.htaccess`, `.htpasswd`, and `.user.ini` should be excluded and stale VFS cache entries may need targeted cleanup.
 * A desktop restart launcher is useful for family laptops when the rclone FUSE mount is stale or disconnected.
 
@@ -499,6 +505,7 @@ For Ubuntu/ZorinOS laptops using Nextcloud over rclone mount:
 * use `rclone mount`, not full desktop sync, for very large trees
 * keep the Nextcloud exclude policy standard
 * use `--daemon-timeout 20s`
+* use `--dir-cache-time 5m`
 * use `--poll-interval 0`
 * do not use `-o x-gvfs-hide` with Ubuntu apt rclone 1.60.x
 * install the desktop restart launcher for non-technical recovery

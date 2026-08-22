@@ -2,7 +2,7 @@
 # Nextcloud rclone mount installer for Ubuntu 24.04 and ZorinOS laptops
 # Scope: Nextcloud only. This script must not modify Dropbox or other rclone services.
 # Eurobotics 2026 - GNU
-# v.20260802.0002
+# v.20260821.0001
 
 set -euo pipefail
 
@@ -227,7 +227,7 @@ ExecStartPre=/usr/bin/mkdir -p /media/%u/nextcloud
 ExecStartPre=/usr/bin/mkdir -p %h/.local/share/rclone/cache
 ExecStart=/usr/bin/rclone mount ${NEXTCLOUD_REMOTE}:/ /media/%u/nextcloud \
   --allow-other \
-  --dir-cache-time 72h \
+  --dir-cache-time 5m \
   --poll-interval 0 \
   --vfs-cache-mode writes \
   --vfs-cache-max-age 24h \
@@ -384,6 +384,7 @@ Create/validate the remote as the target user:
   sudo -u $TARGET_USER -H bash -lc 'rclone lsd nextcloud:/'
 
 Service profile:
+  --dir-cache-time 5m
   --exclude-from %h/.config/rclone/nextcloud-excludes.txt
   --daemon-timeout 20s
   --poll-interval 0

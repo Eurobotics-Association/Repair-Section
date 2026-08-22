@@ -2,7 +2,7 @@
 # Audit and repair the standard Nextcloud rclone framework on a laptop.
 # Designed for Ubuntu/ZorinOS family laptops; originally validated on Robert's Surface Pro 7.
 # Scope: Nextcloud only. Never modify Dropbox or other rclone remotes/services.
-# v.20260802.0001
+# v.20260821.0001
 
 set -euo pipefail
 
@@ -37,6 +37,7 @@ Checks:
   - whether direct Nextcloud rclone mount services use the standard compatible profile:
       --exclude-from %h/.config/rclone/nextcloud-excludes.txt
       --daemon-timeout 20s
+      --dir-cache-time 5m
       --poll-interval 0
       no -o x-gvfs-hide
   - stale forbidden files already queued in the Nextcloud rclone VFS cache
@@ -249,9 +250,10 @@ lines = unit.read_text().splitlines()
 REQUIRED_PAIRS = [
     ["--exclude-from", "%h/.config/rclone/nextcloud-excludes.txt"],
     ["--daemon-timeout", "20s"],
+    ["--dir-cache-time", "5m"],
     ["--poll-interval", "0"],
 ]
-REMOVE_VALUE_OPTIONS = {"--poll-interval", "-o", "--option"}
+REMOVE_VALUE_OPTIONS = {"--dir-cache-time", "--poll-interval", "-o", "--option"}
 
 
 def is_execstart_start(line: str) -> bool:
@@ -357,6 +359,7 @@ unit_has_standard_nextcloud_hardening() {
     execs="$(normalize_unit_execstart "$unit" || true)"
     grep -Eq -- '--exclude-from[[:space:]]+.*nextcloud-excludes\.txt' <<<"$execs" \
         && grep -Eq -- '--daemon-timeout[[:space:]]+20s' <<<"$execs" \
+        && grep -Eq -- '--dir-cache-time[[:space:]]+5m' <<<"$execs" \
         && grep -Eq -- '--poll-interval[[:space:]]+0' <<<"$execs" \
         && ! grep -Eq -- '(^|[[:space:]])(-o|--option)[[:space:]]+x-gvfs-hide([[:space:]]|$)' <<<"$execs" \
         && ! grep -Eq -- '--poll-interval[[:space:]]+30s' <<<"$execs"
@@ -387,7 +390,7 @@ audit_nextcloud_user_services() {
                 log_success "This direct Nextcloud rclone mount service already uses the standard compatible profile."
             elif [[ "$unit" == "$HOME/.config/systemd/user/"* && -w "$unit" ]]; then
                 log_warn "This direct Nextcloud rclone mount service is missing part of the standard compatible profile."
-                echo "  Required: --exclude-from nextcloud-excludes.txt, --daemon-timeout 20s, --poll-interval 0, no x-gvfs-hide"
+                echo "  Required: --exclude-from nextcloud-excludes.txt, --daemon-timeout 20s, --dir-cache-time 5m, --poll-interval 0, no x-gvfs-hide"
                 if [[ -f "$EXCLUDES_FILE" ]] && confirm "Patch this user service with the standard compatible Nextcloud profile?"; then
                     patch_direct_unit "$unit" || true
                     systemctl --user daemon-reload || log_warn "systemctl --user daemon-reload failed."
@@ -455,7 +458,7 @@ print_next_steps() {
   time rclone lsd nextcloud:/
   time rclone lsjson nextcloud:/ --max-depth 1 --fast-list
   time ls -la /media/$USER/nextcloud | head
-  systemctl --user cat nextcloud-rclone.service | grep -E 'exclude-from|daemon-timeout|poll-interval|x-gvfs-hide'
+  systemctl --user cat nextcloud-rclone.service | grep -E 'dir-cache-time|exclude-from|daemon-timeout|poll-interval|x-gvfs-hide'
   journalctl --user -u nextcloud-rclone.service -n 200 --no-pager
   find ~/.local/share/rclone/cache/vfs/nextcloud ~/.local/share/rclone/cache/vfsMeta/nextcloud -name '.htaccess' -print
 
